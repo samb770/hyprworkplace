@@ -632,12 +632,13 @@ test_menu_preselects_and_labels_the_detected_workplace() {
 
   cat >"$bindir/omarchy" <<EOF
 #!/usr/bin/env bash
-# \$1=menu \$2=select \$3=prompt, the rest are the offered options.
+# \$1=menu \$2=select \$3=prompt, the rest are the offered options. Echo the
+# first option back verbatim, same as the raw-echo terminal fallbacks do;
+# cmd_menu's parsing is written to handle that convention too.
 shift 3
 printf '%s\n' "\$1" >"$SANDBOX/first-option"
 printf '%s\n' "\$@" >"$SANDBOX/all-options"
-read -r choice _ <<<"\$1"
-printf '%s\n' "\$choice"
+printf '%s\n' "\$1"
 EOF
   chmod +x "$bindir/omarchy"
 
@@ -645,7 +646,7 @@ EOF
     "$CLI" menu >/dev/null 2>&1 || return 1
 
   assert_contains "$(<"$SANDBOX/first-option")" "desk" || return 1
-  assert_contains "$(<"$SANDBOX/first-option")" "(detected)" || return 1
+  assert_contains "$(<"$SANDBOX/first-option")" "detected" || return 1
   assert_eq "$("$CLI" current)" "desk"
 }
 

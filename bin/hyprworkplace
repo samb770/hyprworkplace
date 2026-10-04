@@ -335,11 +335,11 @@ cmd_menu() {
   for name in "${ordered[@]}"; do
     label=$name
     if [[ $name == "$best" && $name == "$active" ]]; then
-      label="$name  (detected, active)"
+      label=$'\t'"$name"$'\t'"detected, active"
     elif [[ -n $best && $name == "$best" ]]; then
-      label="$name  (detected)"
+      label=$'\t'"$name"$'\t'"detected"
     elif [[ $name == "$active" ]]; then
-      label="$name  (active)"
+      label=$'\t'"$name"$'\t'"active"
     fi
     labels+=("$label")
   done
@@ -347,7 +347,12 @@ cmd_menu() {
   raw=$(omarchy_pick "Workplace" "${labels[@]}") ||
     die "no workplace selected"
   [[ -n $raw ]] || die "no workplace selected"
-  read -r choice _ <<<"$raw"
+  # The native menu returns "<label>\t<subtext>" (no icon field), while our
+  # terminal fallbacks (fzf/select) echo the option back verbatim, including
+  # the leading empty icon field we prefixed. Strip that if present, then the
+  # name is always the text up to the first remaining tab.
+  raw=${raw#$'\t'}
+  IFS=$'\t' read -r choice _ <<<"$raw"
   [[ -n $choice ]] || die "no workplace selected"
 
   cmd_apply "$choice"
