@@ -11,6 +11,24 @@ hypr_require() {
     die "Hyprland does not seem to be running (HYPRLAND_INSTANCE_SIGNATURE is unset)"
 }
 
+# Wait until hyprctl answers. At login the compositor needs a moment before
+# it reports its monitors, and asking too early yields an empty list.
+hypr_wait() {
+  local waited=0 step=0.2
+  local limit=${HW_STARTUP_TIMEOUT:-30}
+
+  command -v hyprctl >/dev/null 2>&1 || return 1
+
+  while :; do
+    if hyprctl monitors all -j >/dev/null 2>&1; then
+      return 0
+    fi
+    awk -v w="$waited" -v l="$limit" 'BEGIN { exit !(w < l) }' || return 1
+    sleep "$step"
+    waited=$(awk -v w="$waited" -v s="$step" 'BEGIN { print w + s }')
+  done
+}
+
 hypr_monitors_json() {
   hyprctl monitors all -j 2>/dev/null || die "could not read monitors from hyprctl"
 }

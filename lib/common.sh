@@ -14,6 +14,9 @@ HW_CURRENT_FILE="$HW_STATE_HOME/current"
 HW_LOADER_BEGIN="-- >>> hyprworkplace >>>"
 HW_LOADER_END="-- <<< hyprworkplace <<<"
 
+# How long `startup` waits for Hyprland to answer, in seconds.
+HW_STARTUP_TIMEOUT="${HW_STARTUP_TIMEOUT:-30}"
+
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   HW_RED=$'\033[31m' HW_YELLOW=$'\033[33m' HW_GREEN=$'\033[32m'
   HW_BOLD=$'\033[1m' HW_DIM=$'\033[2m' HW_RESET=$'\033[0m'

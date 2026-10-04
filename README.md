@@ -69,6 +69,7 @@ hyprworkplace apply desk
 | `validate <name>` | Check it for errors |
 | `remove <name>` | Delete it |
 | `detect` | Suggest the workplace matching the attached monitors |
+| `startup` | Detect and apply the best workplace, run at every login |
 | `install` / `uninstall` | Add or remove the loader and the menu entry |
 
 Useful flags: `apply --dry-run` prints the generated Lua instead of applying
@@ -80,6 +81,34 @@ aren't currently connected. `menu` detects the workplace that best matches
 your connected monitors and puts it first in the list, labelled
 `(detected)` (and `(active)` if it's also the one currently applied), so the
 right choice is pre-selected when you hit `SUPER+SHIFT+W`.
+
+## At login
+
+`install` registers `hyprworkplace startup` with Hyprland, so **every start
+picks the workplace that fits the hardware in front of you** instead of
+replaying the one you happened to apply last:
+
+1. It waits until `hyprctl` answers — at login the compositor needs a moment
+   before it reports its monitors.
+2. It detects the best match: every monitor a workplace needs must be
+   connected, and the one matching the most monitors wins.
+3. If nothing matches, it warns and applies the workplace marked
+   `fallback = true` (typically the laptop-only one). Without such a marker
+   it keeps the last active workplace and warns.
+4. The winner is applied like `apply` does, including launching the apps that
+   belong on each workspace.
+
+```ini
+[workplace]
+name     = Notebook
+fallback = true
+```
+
+Because the apps of a workplace are launched by `startup`, any app
+autostart you had in `~/.config/hypr/autostart.lua` and any window rule in
+`~/.config/hypr/windows.lua` that pins the same apps to a workspace should be
+removed — otherwise both configurations fight over your windows after a
+reboot.
 
 ## Workplace format
 
@@ -130,6 +159,7 @@ autostart = false
 | `description` | — | One-line summary shown by `list` |
 | `unlisted` | `auto` | What to do with monitors not listed here: `auto` keeps them at their preferred mode, `disable` switches them off |
 | `gdk_scale` | — | Sets `GDK_SCALE`, matching Omarchy's own default of `2` |
+| `fallback` | `false` | `true` marks this workplace as the one `startup` applies when no workplace matches the attached monitors |
 
 ### `[monitor.<output>]`
 
@@ -198,7 +228,10 @@ without a sibling, percentages that don't add up to 100, or more than two.
    helpers: `hl.monitor`, `hl.workspace_rule` and `o.window`.
 3. A loader block at the end of `~/.config/hypr/monitors.lua` `dofile`s that
    generated file, so it overrides whatever you configured above it — and the
-   workplace survives reloads, logouts and reboots.
+   workplace survives reloads, logouts and reboots. The same block registers
+   `hyprworkplace startup` on `hyprland.start`, which re-detects the matching
+   workplace on every login. `install` refreshes the block in place when it
+   is out of date.
 4. `hyprctl reload` applies it, and `hyprctl configerrors` is checked.
 5. A `workspace_rule`'s `monitor` only takes effect for a workspace that is
    (re)created; one already showing on another monitor stays there, so every
@@ -252,6 +285,7 @@ notes (in German).
 - [x] Workplaces for monitors, workspaces and apps
 - [x] `new --from-current`, validation, `detect`
 - [x] Omarchy menu entry and picker
+- [x] Auto-detect and apply the matching workplace at login
 - [ ] `watch` — apply automatically when a monitor is plugged in or removed
 - [ ] Status bar widget showing the active workplace
 - [ ] AUR package

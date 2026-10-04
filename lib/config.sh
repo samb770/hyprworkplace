@@ -141,11 +141,16 @@ config_validate() {
   local mon ws app value enabled_monitors=0
   local -a keys
 
-  _config_check_keys "[workplace]" "name description unlisted gdk_scale" "${!HW_META[@]}"
+  _config_check_keys "[workplace]" "name description unlisted gdk_scale fallback" "${!HW_META[@]}"
 
   case ${HW_META[unlisted]:-auto} in
     auto | disable) ;;
     *) die "[workplace] unlisted must be 'auto' or 'disable'" ;;
+  esac
+
+  case ${HW_META[fallback]:-false} in
+    true | false) ;;
+    *) die "[workplace] fallback must be true or false" ;;
   esac
 
   if [[ -n ${HW_META[gdk_scale]:-} && ! ${HW_META[gdk_scale]} =~ ^[1-9][0-9]*$ ]]; then

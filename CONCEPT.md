@@ -170,12 +170,20 @@ Semantik:
   offene Fenster aus `hyprctl` und schreibt sie als Startpunkt in die
   Datei. Das ist der schnellste Weg, einen neuen Workplace anzulegen.
 
-### `detect` / `watch`
+### `detect` / `startup` / `watch`
 
 - `detect` vergleicht angeschlossene Monitore mit allen Workplaces und
   schlägt den passenden vor (`--apply` wendet ihn direkt an). Gewählt
   wird der Workplace, dessen Monitore alle vorhanden sind und der davon
   die meisten nutzt.
+- Passt keiner, greift der Workplace mit `fallback = true` — typischerweise
+  die Nur-Laptop-Konfiguration. `detect` gibt ihn mit einer Warnung aus.
+- `startup` ist der Login-Pfad: wartet auf `hyprctl`, erkennt den passenden
+  Workplace (inkl. Fallback, sonst der zuletzt aktive) und wendet ihn an.
+  Registriert wird er vom Loader-Block in `monitors.lua` über
+  `o.exec_on_start` bzw. `hl.on("hyprland.start", ...)`. Damit lädt ein
+  Reboot nie mehr eine zur Hardware unpassende Konfiguration, und die Apps
+  landen ohne `autostart.lua`-Duplikate auf ihren Workspaces.
 - `watch` (geplant) lauscht auf Hyprland-IPC-Events (`monitoradded`/
   `monitorremoved`) und ruft `detect --apply` auf. Läuft als
   systemd-user-Service oder wird über `post-boot.d`-Hook gestartet.
@@ -192,6 +200,7 @@ hyprworkplace edit <name>            # im $EDITOR öffnen, danach validieren
 hyprworkplace validate <name>
 hyprworkplace remove <name>
 hyprworkplace detect [--apply]       # passenden Workplace erkennen
+hyprworkplace startup                # beim Login: erkennen + anwenden
 hyprworkplace menu                   # Picker via `omarchy menu select`
 hyprworkplace install | uninstall    # Loader + Menü ein-/ausrichten
 hyprworkplace watch                  # geplant (Phase 2)
@@ -280,7 +289,7 @@ hyprworkplace/
 | Phase | Inhalt | Status |
 |-------|--------|--------|
 | 1 | `list/show/apply/current/menu/new/edit/validate/remove`, Lua-Generator, Loader, Beispiele, README, MIT, 40 Tests, CI | **fertig** |
-| 2 | `detect` | **fertig** |
+| 2 | `detect`, `startup` (Login-Autodetect + `fallback`) | **fertig** |
 | 2 | `watch` (Hyprland-IPC), post-boot-Hook | offen |
 | 3 | Bar-Widget, AUR-Paket, Wallpaper/Idle pro Workplace | offen |
 

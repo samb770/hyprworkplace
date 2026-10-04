@@ -10,6 +10,7 @@ set -euo pipefail
 HW_VERSION="0.1.0"
 
 _hw_self=$(readlink -f "${BASH_SOURCE[0]}")
+HW_SELF=$_hw_self
 HW_ROOT=$(cd "$(dirname "$_hw_self")/.." && pwd)
 HW_LIB="${HW_LIB:-$HW_ROOT/lib}"
 HW_TEMPLATES="${HW_TEMPLATES:-$HW_ROOT/templates}"
@@ -44,6 +45,7 @@ Commands:
   validate <name>           Check a workplace for errors
   remove <name>             Delete a workplace
   detect                    Suggest the workplace matching the attached monitors
+  startup                   Detect and apply the best workplace (runs at login)
   install                   Install the Hyprland loader and the Omarchy menu entry
   uninstall                 Remove both again
   version                   Print the version
@@ -54,6 +56,7 @@ Options:
   apply --no-apps           Only monitors and workspaces, do not touch windows
   apply --dry-run           Print the generated Lua instead of applying it
   detect --apply            Apply the detected workplace right away
+  startup --no-apps         Only monitors and workspaces, do not touch windows
   remove --force            Do not ask for confirmation
 
 Examples:
@@ -142,6 +145,46 @@ detect_best_workplace() {
 
   [[ -n $best ]] || return 1
   printf '%s\n' "$best"
+}
+
+# The workplace marked with `fallback = true`, used when no workplace fits
+# the attached monitors. Prints the first one it finds, in list order.
+fallback_workplace() {
+  local -a names=("$@")
+  local name
+
+  for name in "${names[@]}"; do
+    (load_workplace "$name") >/dev/null 2>&1 || continue
+    load_workplace "$name"
+    if [[ ${HW_META[fallback]:-false} == true ]]; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# The workplace to use for a given set of connected monitors: the best
+# match, or the configured fallback with a warning. Prints the name.
+resolve_workplace() {
+  local connected_list=$1
+  shift
+  local -a names=("$@")
+  local best
+
+  if best=$(detect_best_workplace "$connected_list" "${names[@]}"); then
+    printf '%s\n' "$best"
+    return 0
+  fi
+
+  if best=$(fallback_workplace "${names[@]}"); then
+    warn "no workplace matches the attached monitors ($(tr '\n' ' ' <<<"$connected_list")), falling back to '$best'"
+    printf '%s\n' "$best"
+    return 0
+  fi
+
+  return 1
 }
 
 regex_escape() {
@@ -556,14 +599,47 @@ cmd_detect() {
 
   local connected_list best
   connected_list=$(hypr_connected_outputs)
-  best=$(detect_best_workplace "$connected_list" "${names[@]}") ||
-    die "no workplace matches the attached monitors: $(tr '\n' ' ' <<<"$connected_list")"
+  best=$(resolve_workplace "$connected_list" "${names[@]}") ||
+    die "no workplace matches the attached monitors: $(tr '\n' ' ' <<<"$connected_list") (mark one with 'fallback = true' to always have a default)"
 
   printf '%s\n' "$best"
 
   if [[ $apply == true ]]; then
     cmd_apply "$best"
   fi
+}
+
+# Pick and apply the matching workplace right after Hyprland came up. The
+# loader in monitors.lua runs this on every start, so a reboot never leaves
+# a stale workplace behind.
+cmd_startup() {
+  local no_apps=""
+  while (($# > 0)); do
+    case $1 in
+      --no-apps) no_apps=--no-apps ;;
+      *) die "unknown option for startup: $1" ;;
+    esac
+    shift
+  done
+
+  require_cmd jq
+  hypr_wait || die "Hyprland did not become available within ${HW_STARTUP_TIMEOUT}s"
+
+  local -a names
+  mapfile -t names < <(list_workplace_names)
+  ((${#names[@]} > 0)) || die "no workplaces to choose from"
+
+  local connected_list best
+  connected_list=$(hypr_connected_outputs)
+
+  if ! best=$(resolve_workplace "$connected_list" "${names[@]}"); then
+    best=$(current_workplace) ||
+      die "no workplace matches the attached monitors: $(tr '\n' ' ' <<<"$connected_list")"
+    warn "no workplace matches the attached monitors, keeping the last active one '$best'"
+    omarchy_notify "No workplace matches the attached monitors, kept '$best'"
+  fi
+
+  cmd_apply ${no_apps:+"$no_apps"} "$best"
 }
 
 cmd_install() {
@@ -602,6 +678,7 @@ main() {
     validate | check) cmd_validate "$@" ;;
     remove | rm | delete) cmd_remove "$@" ;;
     detect) cmd_detect "$@" ;;
+    startup) cmd_startup "$@" ;;
     install) cmd_install "$@" ;;
     uninstall) cmd_uninstall "$@" ;;
     version | --version | -v) printf 'hyprworkplace %s\n' "$HW_VERSION" ;;

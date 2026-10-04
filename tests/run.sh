@@ -700,6 +700,130 @@ EOF
 }
 
 # --------------------------------------------------------------------------
+# startup and fallback
+# --------------------------------------------------------------------------
+
+test_fallback_key_must_be_boolean() {
+  { valid_workplace; } | sed 's/^unlisted    = disable/unlisted    = disable\nfallback    = maybe/' |
+    write_workplace desk
+  local out
+  out=$("$CLI" validate desk 2>&1) && return 1
+  assert_contains "$out" "fallback must be true or false"
+}
+
+# A workplace that only needs eDP-1 and is marked as the fallback.
+fallback_workplace_file() {
+  cat <<'EOF'
+[workplace]
+name        = Notebook
+description = Laptop only
+fallback    = true
+
+[monitor.eDP-1]
+mode     = preferred
+position = 0x0
+
+[workspaces]
+1 = eDP-1
+EOF
+}
+
+test_detect_falls_back_when_nothing_matches() {
+  valid_workplace | write_workplace desk # needs eDP-1 + HDMI-A-1
+  fallback_workplace_file | write_workplace notebook
+
+  local bindir out
+  bindir=$(fake_hyprland '[{"name":"DP-9"}]') # neither workplace fits
+
+  out=$(HYPRLAND_INSTANCE_SIGNATURE=test PATH="$bindir:$PATH" \
+    "$CLI" detect 2>&1) || return 1
+  assert_contains "$out" "no workplace matches" || return 1
+  assert_contains "$out" "notebook"
+}
+
+test_detect_without_a_fallback_still_fails() {
+  valid_workplace | write_workplace desk
+
+  local bindir out
+  bindir=$(fake_hyprland '[{"name":"DP-9"}]')
+
+  out=$(HYPRLAND_INSTANCE_SIGNATURE=test PATH="$bindir:$PATH" \
+    "$CLI" detect 2>&1) && return 1
+  assert_contains "$out" "no workplace matches"
+}
+
+test_startup_applies_the_detected_workplace() {
+  valid_workplace | write_workplace desk # needs eDP-1 + HDMI-A-1
+  fallback_workplace_file | write_workplace notebook
+
+  local bindir
+  bindir=$(fake_hyprland '[{"name":"eDP-1"},{"name":"HDMI-A-1"}]')
+
+  HYPRLAND_INSTANCE_SIGNATURE=test PATH="$bindir:$PATH" \
+    "$CLI" startup --no-apps >/dev/null 2>&1 || return 1
+
+  assert_eq "$("$CLI" current)" "desk"
+}
+
+test_startup_applies_the_fallback_workplace() {
+  valid_workplace | write_workplace desk
+  fallback_workplace_file | write_workplace notebook
+  printf 'desk\n' >"$HW_STATE_HOME/current"
+
+  local bindir out
+  bindir=$(fake_hyprland '[{"name":"DP-9"}]') # nothing fits
+
+  out=$(HYPRLAND_INSTANCE_SIGNATURE=test PATH="$bindir:$PATH" \
+    "$CLI" startup --no-apps 2>&1) || return 1
+  assert_contains "$out" "falling back to 'notebook'" || return 1
+  assert_eq "$("$CLI" current)" "notebook"
+}
+
+test_startup_keeps_the_last_workplace_without_a_fallback() {
+  valid_workplace | write_workplace desk
+  printf 'desk\n' >"$HW_STATE_HOME/current"
+
+  local bindir out
+  bindir=$(fake_hyprland '[{"name":"DP-9"}]')
+
+  out=$(HYPRLAND_INSTANCE_SIGNATURE=test PATH="$bindir:$PATH" \
+    "$CLI" startup --no-apps 2>&1) || return 1
+  assert_contains "$out" "keeping the last active one" || return 1
+  assert_eq "$("$CLI" current)" "desk"
+}
+
+test_loader_registers_the_startup_hook() {
+  valid_workplace | write_workplace desk
+  "$CLI" apply desk >/dev/null 2>&1
+
+  local loader
+  loader=$(<"$HW_HYPR_CONFIG/monitors.lua")
+  assert_contains "$loader" 'hyprworkplace_cmd' || return 1
+  assert_contains "$loader" '" startup"' || return 1
+  assert_contains "$loader" 'o.exec_on_start(hyprworkplace_cmd)'
+}
+
+test_loader_is_refreshed_when_outdated() {
+  valid_workplace | write_workplace desk
+  cat >"$HW_HYPR_CONFIG/monitors.lua" <<'EOF'
+-- user config
+-- >>> hyprworkplace >>>
+-- an older, hookless loader
+dofile("/nowhere/workplace.lua")
+-- <<< hyprworkplace <<<
+EOF
+
+  "$CLI" install >/dev/null 2>&1 || return 1
+
+  local loader
+  loader=$(<"$HW_HYPR_CONFIG/monitors.lua")
+  assert_contains "$loader" "-- user config" || return 1
+  assert_contains "$loader" 'hyprworkplace_cmd' || return 1
+  assert_not_contains "$loader" "an older, hookless loader" || return 1
+  assert_eq "$(grep -c -- '>>> hyprworkplace >>>' "$HW_HYPR_CONFIG/monitors.lua")" "1"
+}
+
+# --------------------------------------------------------------------------
 # shipped examples
 # --------------------------------------------------------------------------
 
@@ -990,6 +1114,15 @@ main() {
   it "edit splits editor arguments" test_edit_splits_editor_arguments
   it "edit prefers VISUAL over EDITOR" test_edit_prefers_visual_over_editor
   it "edit reports a missing editor" test_edit_reports_a_missing_editor
+
+  it "fallback key must be boolean" test_fallback_key_must_be_boolean
+  it "detect falls back when nothing matches" test_detect_falls_back_when_nothing_matches
+  it "detect without a fallback still fails" test_detect_without_a_fallback_still_fails
+  it "startup applies the detected workplace" test_startup_applies_the_detected_workplace
+  it "startup applies the fallback workplace" test_startup_applies_the_fallback_workplace
+  it "startup keeps the last workplace without a fallback" test_startup_keeps_the_last_workplace_without_a_fallback
+  it "loader registers the startup hook" test_loader_registers_the_startup_hook
+  it "loader is refreshed when outdated" test_loader_is_refreshed_when_outdated
 
   it "shipped examples are valid" test_examples_are_valid
   it "shipped template is valid" test_template_is_valid
