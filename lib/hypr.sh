@@ -65,6 +65,28 @@ _lua_literal() {
   printf '[%s[%s]%s]' "$eq" "$s" "$eq"
 }
 
+# A workspace_rule's `monitor` only takes effect when the workspace is
+# (re)created; a workspace that is already visible on another monitor stays
+# put until something moves it explicitly. Force every configured workspace
+# onto its monitor so `apply` is idempotent regardless of prior state.
+hypr_force_workspace_monitors() {
+  local ws mon
+
+  for ws in "${HW_WS_IDS[@]}"; do
+    mon=${HW_WS[$ws]}
+    [[ -n $mon ]] || continue
+
+    if [[ $(hypr_api) == lua ]]; then
+      hyprctl eval "return hl.dispatch(hl.dsp.workspace.move({ workspace = $(_lua_literal "$ws"), monitor = $(_lua_literal "$mon") }))" \
+        >/dev/null 2>&1 ||
+        warn "could not move workspace $ws to monitor $mon"
+    else
+      hyprctl dispatch moveworkspacetomonitor "$ws $mon" >/dev/null 2>&1 ||
+        warn "could not move workspace $ws to monitor $mon"
+    fi
+  done
+}
+
 # Move a single window to a workspace without following it.
 hypr_move_window() {
   local ws=$1 addr=$2 lua

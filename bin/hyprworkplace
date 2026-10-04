@@ -221,6 +221,7 @@ cmd_apply() {
   fi
 
   hypr_reload || true
+  hypr_force_workspace_monitors
 
   if [[ $no_apps == false ]]; then
     hypr_apply_apps || app_status=1

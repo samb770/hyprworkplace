@@ -645,6 +645,49 @@ test_lua_literal_output_is_valid_lua() {
     }
 }
 
+# Run hypr_force_workspace_monitors against a fake hyprctl that logs every
+# invocation, so the two Hyprland API variants can be tested without one.
+force_workspace_monitors_log() (
+  local api=$1 # lua | legacy
+  local bindir="$SANDBOX/fakebin"
+  mkdir -p "$bindir"
+  : >"$SANDBOX/hyprctl.log"
+
+  cat >"$bindir/hyprctl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SANDBOX/hyprctl.log"
+if [[ "\$1 \$2" == "eval return 1" ]]; then
+  [[ $api == lua ]] && exit 0 || exit 1
+fi
+exit 0
+EOF
+  chmod +x "$bindir/hyprctl"
+
+  PATH="$bindir:$PATH" bash -c '
+    die() { exit 1; }; warn() { :; }
+    source "'"$ROOT"'/lib/hypr.sh"
+    HW_WS_IDS=(1 2)
+    declare -A HW_WS=([1]=eDP-1 [2]=DP-2)
+    hypr_force_workspace_monitors
+  '
+  cat "$SANDBOX/hyprctl.log"
+)
+
+test_force_workspace_monitors_uses_lua_eval() {
+  local log
+  log=$(force_workspace_monitors_log lua)
+  assert_contains "$log" 'eval return hl.dispatch(hl.dsp.workspace.move({ workspace = [[1]], monitor = [[eDP-1]] }))' ||
+    return 1
+  assert_contains "$log" 'eval return hl.dispatch(hl.dsp.workspace.move({ workspace = [[2]], monitor = [[DP-2]] }))'
+}
+
+test_force_workspace_monitors_falls_back_to_legacy() {
+  local log
+  log=$(force_workspace_monitors_log legacy)
+  assert_contains "$log" 'dispatch moveworkspacetomonitor 1 eDP-1' || return 1
+  assert_contains "$log" 'dispatch moveworkspacetomonitor 2 DP-2'
+}
+
 test_edit_splits_editor_arguments() {
   valid_workplace | write_workplace desk
 
@@ -735,6 +778,8 @@ main() {
   it "lua literal escalates bracket level" test_lua_literal_escalates_bracket_level
   it "lua literal output is valid lua" test_lua_literal_output_is_valid_lua
 
+  it "force workspace monitors uses lua eval" test_force_workspace_monitors_uses_lua_eval
+  it "force workspace monitors falls back to legacy" test_force_workspace_monitors_falls_back_to_legacy
   it "edit splits editor arguments" test_edit_splits_editor_arguments
   it "edit prefers VISUAL over EDITOR" test_edit_prefers_visual_over_editor
   it "edit reports a missing editor" test_edit_reports_a_missing_editor
