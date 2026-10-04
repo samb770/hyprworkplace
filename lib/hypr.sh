@@ -170,3 +170,124 @@ hypr_apply_apps() {
   printf 'apps: %d moved, %d launched, %d skipped\n' \
     "$moved" "$launched" "$skipped" >&2
 }
+
+# Switch the input focus to a workspace, without moving any window.
+hypr_focus_workspace() {
+  local ws=$1
+  if [[ $(hypr_api) == lua ]]; then
+    hyprctl eval "return hl.dispatch(hl.dsp.focus({ workspace = $(_lua_literal "$ws") }))" \
+      >/dev/null 2>&1
+  else
+    hyprctl dispatch workspace "$ws" >/dev/null 2>&1
+  fi
+}
+
+# Focus a single window by address.
+hypr_focus_window() {
+  local addr=$1
+  if [[ $(hypr_api) == lua ]]; then
+    hyprctl eval "return hl.dispatch(hl.dsp.focus({ window = $(_lua_literal "address:$addr") }))" \
+      >/dev/null 2>&1
+  else
+    hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1
+  fi
+}
+
+# Set the dwindle split ratio of the currently focused window's parent node.
+# ratio is the raw splitratio value (0.1-1.9, 1.0 = 50/50).
+hypr_set_splitratio() {
+  local ratio=$1
+  if [[ $(hypr_api) == lua ]]; then
+    hyprctl eval "return hl.dispatch(hl.dsp.layout($(_lua_literal "splitratio $ratio exact")))" \
+      >/dev/null 2>&1
+  else
+    hyprctl dispatch layoutmsg "splitratio $ratio exact" >/dev/null 2>&1
+  fi
+}
+
+# Find the address of a window matching an app's rule on a specific
+# workspace, polling briefly since a just-launched app maps asynchronously.
+_hypr_find_window_on_workspace() {
+  local field=$1 regex=$2 ws=$3
+  local addr tries=0
+
+  while ((tries < 20)); do
+    addr=$(hypr_clients_json | jq -r --arg f "$field" --arg re "$regex" --arg ws "$ws" \
+      '.[] | select(.workspace.id == ($ws | tonumber))
+       | select(((.[$f] // "") | tostring) | test($re))
+       | .address' | head -n1)
+    if [[ -n $addr ]]; then
+      printf '%s\n' "$addr"
+      return 0
+    fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+# Apply the left/right (or top/bottom) tiling ratio requested by apps that
+# declare a 'split' percentage. Only workspaces with exactly two such apps
+# qualify (config_validate already enforces that invariant).
+hypr_apply_splits() {
+  local app ws addr1 addr2 app1 app2 ratio target_pct actual_pct w1 w2
+  local -A ws_apps=()
+  local -a pair
+
+  for app in "${HW_APPS[@]}"; do
+    [[ -n $(app_split "$app") ]] || continue
+    ws=${HW_APP[$app|workspace]}
+    ws_apps[$ws]="${ws_apps[$ws]:-}${ws_apps[$ws]:+ }$app"
+  done
+
+  ((${#ws_apps[@]} > 0)) || return 0
+
+  local restore_ws restore_addr
+  restore_ws=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // empty')
+  restore_addr=$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty')
+
+  for ws in "${!ws_apps[@]}"; do
+    read -r -a pair <<<"${ws_apps[$ws]}"
+    ((${#pair[@]} == 2)) || continue
+    app1=${pair[0]}
+    app2=${pair[1]}
+
+    if ! addr1=$(_hypr_find_window_on_workspace "$(app_match_field "$app1")" "$(app_match_regex "$app1")" "$ws"); then
+      warn "could not find a window for '$app1' to apply its split on workspace $ws"
+      continue
+    fi
+    if ! addr2=$(_hypr_find_window_on_workspace "$(app_match_field "$app2")" "$(app_match_regex "$app2")" "$ws"); then
+      warn "could not find a window for '$app2' to apply its split on workspace $ws"
+      continue
+    fi
+    [[ $addr1 != "$addr2" ]] || continue
+
+    hypr_focus_workspace "$ws"
+    sleep 0.1
+    hypr_focus_window "$addr1"
+    sleep 0.1
+
+    target_pct=$(app_split "$app1")
+    ratio=$(awk -v p="$target_pct" 'BEGIN { printf "%.4f", p / 100 * 2 }')
+    hypr_set_splitratio "$ratio"
+    sleep 0.1
+
+    # splitratio sets the tiling tree's first child's share, regardless of
+    # which sibling is focused when it runs. Verify app1 actually ended up
+    # with its requested share and flip the ratio once if the tree put it
+    # in the other slot.
+    w1=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr1" '.[] | select(.address == $a) | .size[0]')
+    w2=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr2" '.[] | select(.address == $a) | .size[0]')
+    if [[ -n $w1 && -n $w2 ]]; then
+      actual_pct=$(awk -v a="$w1" -v b="$w2" 'BEGIN { printf "%d", (a / (a + b)) * 100 }')
+      if ((actual_pct < target_pct - 5 || actual_pct > target_pct + 5)); then
+        ratio=$(awk -v r="$ratio" 'BEGIN { printf "%.4f", 2 - r }')
+        hypr_set_splitratio "$ratio"
+      fi
+    fi
+  done
+
+  [[ -n $restore_ws ]] && hypr_focus_workspace "$restore_ws"
+  [[ -n $restore_addr ]] && hypr_focus_window "$restore_addr"
+  return 0
+}

@@ -142,6 +142,55 @@ test_valid_workplace_passes() {
   assert_contains "$out" "is valid"
 }
 
+test_split_pair_summing_to_100_is_accepted() {
+  { valid_workplace
+    cat <<'EOF'
+[app.terminal]
+workspace = 2
+match     = class:^foot$
+exec      = uwsm-app -- foot
+split     = 33
+EOF
+  } | sed 's/^exec      = uwsm-app -- chromium/&\nsplit     = 67/' | write_workplace desk
+  local out
+  out=$("$CLI" validate desk 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  assert_contains "$out" "is valid"
+}
+
+test_split_without_a_sibling_is_rejected() {
+  { valid_workplace
+  } | sed 's/^exec      = uwsm-app -- chromium/&\nsplit     = 67/' | write_workplace desk
+  local out
+  out=$("$CLI" validate desk 2>&1) && return 1
+  assert_contains "$out" "has one app with 'split' but no sibling"
+}
+
+test_split_pair_not_summing_to_100_is_rejected() {
+  { valid_workplace
+    cat <<'EOF'
+[app.terminal]
+workspace = 2
+match     = class:^foot$
+exec      = uwsm-app -- foot
+split     = 40
+EOF
+  } | sed 's/^exec      = uwsm-app -- chromium/&\nsplit     = 67/' | write_workplace desk
+  local out
+  out=$("$CLI" validate desk 2>&1) && return 1
+  assert_contains "$out" "must add up to 100"
+}
+
+test_split_out_of_range_is_rejected() {
+  { valid_workplace
+  } | sed 's/^exec      = uwsm-app -- chromium/&\nsplit     = 100/' | write_workplace desk
+  local out
+  out=$("$CLI" validate desk 2>&1) && return 1
+  assert_contains "$out" "invalid split '100'"
+}
+
 test_unknown_section_is_rejected() {
   write_workplace bad <<'EOF'
 [monitor.eDP-1]
@@ -753,6 +802,91 @@ test_force_workspace_monitors_falls_back_to_legacy() {
   assert_contains "$log" 'dispatch moveworkspacetomonitor 2 DP-2'
 }
 
+apply_splits_log() (
+  local bindir="$SANDBOX/fakebin"
+  mkdir -p "$bindir"
+  : >"$SANDBOX/hyprctl.log"
+
+  cat >"$bindir/hyprctl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SANDBOX/hyprctl.log"
+case "\$1 \$2" in
+  "eval return 1") exit 0 ;;
+  "activeworkspace -j") echo '{"id":5}' ;;
+  "activewindow -j") echo '{"address":"0xorig"}' ;;
+  "clients -j")
+    echo '[
+      {"address":"0xaaa","class":"chromium","workspace":{"id":1},"size":[1340,1146]},
+      {"address":"0xbbb","class":"foot","workspace":{"id":1},"size":[660,1146]}
+    ]' ;;
+  *) ;;
+esac
+exit 0
+EOF
+  chmod +x "$bindir/hyprctl"
+
+  PATH="$bindir:$PATH" bash -c '
+    die() { exit 1; }; warn() { :; }
+    source "'"$ROOT"'/lib/config.sh"
+    source "'"$ROOT"'/lib/hypr.sh"
+    HW_APPS=(browser terminal)
+    declare -A HW_APP=(
+      [browser|workspace]=1 [browser|match]="class:^chromium$" [browser|split]=67
+      [terminal|workspace]=1 [terminal|match]="class:^foot$" [terminal|split]=33
+    )
+    hypr_apply_splits
+  '
+  cat "$SANDBOX/hyprctl.log"
+)
+
+test_apply_splits_sets_the_ratio_and_restores_focus() {
+  local log
+  log=$(apply_splits_log)
+  assert_contains "$log" "eval return hl.dispatch(hl.dsp.focus({ workspace = [[1]] }))" || return 1
+  assert_contains "$log" "eval return hl.dispatch(hl.dsp.focus({ window = [[address:0xaaa]] }))" || return 1
+  assert_contains "$log" "splitratio 1.3400 exact" || return 1
+  # Sizes already matched the 67/33 target, so there is no corrective
+  # second splitratio call.
+  local splitratio_calls
+  splitratio_calls=$(grep -c "splitratio" <<<"$log")
+  assert_eq "$splitratio_calls" "1" || return 1
+  # Focus is restored to whatever was active before the function ran.
+  assert_contains "$log" "eval return hl.dispatch(hl.dsp.focus({ workspace = [[5]] }))" || return 1
+  assert_contains "$log" "eval return hl.dispatch(hl.dsp.focus({ window = [[address:0xorig]] }))"
+}
+
+test_apply_splits_skips_a_workspace_without_both_windows() {
+  local bindir
+  bindir="$SANDBOX/fakebin"
+  mkdir -p "$bindir"
+  cat >"$bindir/hyprctl" <<EOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "eval return 1") exit 0 ;;
+  "activeworkspace -j") echo '{"id":1}' ;;
+  "activewindow -j") echo '{}' ;;
+  "clients -j") echo '[]' ;;
+  *) ;;
+esac
+exit 0
+EOF
+  chmod +x "$bindir/hyprctl"
+
+  local out
+  out=$(PATH="$bindir:$PATH" bash -c '
+    die() { exit 1; }; warn() { printf "warn: %s\n" "$1"; }
+    source "'"$ROOT"'/lib/config.sh"
+    source "'"$ROOT"'/lib/hypr.sh"
+    HW_APPS=(browser terminal)
+    declare -A HW_APP=(
+      [browser|workspace]=1 [browser|match]="class:^chromium$" [browser|split]=67
+      [terminal|workspace]=1 [terminal|match]="class:^foot$" [terminal|split]=33
+    )
+    hypr_apply_splits
+  ' 2>&1)
+  assert_contains "$out" "could not find a window for 'browser'"
+}
+
 test_edit_splits_editor_arguments() {
   valid_workplace | write_workplace desk
 
@@ -797,6 +931,10 @@ test_edit_reports_a_missing_editor() {
 
 main() {
   it "valid workplace passes" test_valid_workplace_passes
+  it "split pair summing to 100 is accepted" test_split_pair_summing_to_100_is_accepted
+  it "split without a sibling is rejected" test_split_without_a_sibling_is_rejected
+  it "split pair not summing to 100 is rejected" test_split_pair_not_summing_to_100_is_rejected
+  it "split out of range is rejected" test_split_out_of_range_is_rejected
   it "unknown section is rejected" test_unknown_section_is_rejected
   it "unknown key is rejected" test_unknown_key_is_rejected
   it "duplicate key is rejected" test_duplicate_key_is_rejected
@@ -847,6 +985,8 @@ main() {
 
   it "force workspace monitors uses lua eval" test_force_workspace_monitors_uses_lua_eval
   it "force workspace monitors falls back to legacy" test_force_workspace_monitors_falls_back_to_legacy
+  it "apply splits sets the ratio and restores focus" test_apply_splits_sets_the_ratio_and_restores_focus
+  it "apply splits skips a workspace without both windows" test_apply_splits_skips_a_workspace_without_both_windows
   it "edit splits editor arguments" test_edit_splits_editor_arguments
   it "edit prefers VISUAL over EDITOR" test_edit_prefers_visual_over_editor
   it "edit reports a missing editor" test_edit_reports_a_missing_editor

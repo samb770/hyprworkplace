@@ -205,7 +205,7 @@ config_validate() {
 
   for app in "${HW_APPS[@]}"; do
     mapfile -t keys < <(_config_keys_of HW_APP "$app")
-    _config_check_keys "[app.$app]" "workspace exec match autostart" "${keys[@]}"
+    _config_check_keys "[app.$app]" "workspace exec match autostart split" "${keys[@]}"
 
     value=${HW_APP[$app|workspace]:-}
     [[ -n $value ]] || die "[app.$app] missing required key 'workspace'"
@@ -214,6 +214,12 @@ config_validate() {
     [[ -n $value ]] || die "[app.$app] missing required key 'match'"
     _config_valid_match "$value" ||
       die "[app.$app] invalid match '$value' (use class:<regex>, title:<regex>, initialClass:<regex> or initialTitle:<regex>)"
+
+    if [[ -n ${HW_APP[$app|split]:-} ]]; then
+      value=${HW_APP[$app|split]}
+      [[ $value =~ ^[0-9]+$ && $value -ge 1 && $value -le 99 ]] ||
+        die "[app.$app] invalid split '$value' (integer percentage 1-99)"
+    fi
 
     value=${HW_APP[$app|autostart]:-true}
     case $value in
@@ -225,7 +231,34 @@ config_validate() {
     [[ -n ${HW_APP[$app|exec]:-} ]] ||
       die "[app.$app] autostart requires 'exec' (or set autostart = false)"
   done
+
+  # 'split' pairs two apps on the same workspace into a left/right (or
+  # top/bottom, depending on layout) tiling ratio. Each workspace may have
+  # at most one such pair, and the two percentages must add up to 100.
+  local -A split_count=() split_sum=()
+  for app in "${HW_APPS[@]}"; do
+    value=${HW_APP[$app|split]:-}
+    [[ -n $value ]] || continue
+    ws=${HW_APP[$app|workspace]}
+    split_count[$ws]=$((${split_count[$ws]:-0} + 1))
+    split_sum[$ws]=$((${split_sum[$ws]:-0} + value))
+  done
+  for ws in "${!split_count[@]}"; do
+    case ${split_count[$ws]} in
+      1)
+        die "[workspaces] workspace $ws has one app with 'split' but no sibling — add 'split' to both apps sharing that workspace"
+        ;;
+      2)
+        ((split_sum[$ws] == 100)) ||
+          die "[workspaces] workspace $ws: the two 'split' values must add up to 100 (got ${split_sum[$ws]})"
+        ;;
+      *)
+        die "[workspaces] workspace $ws: 'split' only supports exactly two apps (got ${split_count[$ws]})"
+        ;;
+    esac
+  done
 }
 
 app_match_field() { printf '%s' "${HW_APP[$1|match]%%:*}"; }
 app_match_regex() { printf '%s' "${HW_APP[$1|match]#*:}"; }
+app_split() { printf '%s' "${HW_APP[$1|split]:-}"; }

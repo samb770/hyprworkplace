@@ -159,9 +159,34 @@ One section per connector; run `hyprctl monitors all` to see yours.
 | `match` | — | `class:`, `title:`, `initialClass:` or `initialTitle:` followed by a regex, required |
 | `exec` | — | Command used to start the app when no window matches |
 | `autostart` | `true` | `false` only moves a running window, it never launches |
+| `split` | — | Tiling share in percent, see below |
 
 Find the values to match on with `hyprctl clients`. On Omarchy, prefix launch
 commands with `uwsm-app --` so apps end up in the right systemd scope.
+
+#### Splitting a workspace between two apps
+
+Give exactly two apps on the same workspace a `split` percentage and they add
+up to 100:
+
+```ini
+[app.browser]
+workspace = 1
+match     = class:^chromium$
+exec      = omarchy launch browser
+split     = 67
+
+[app.terminal]
+workspace = 1
+match     = class:^foot$
+exec      = uwsm-app -- foot
+split     = 33
+```
+
+`apply` focuses the workspace, adjusts the dwindle split ratio between the
+two windows to match, and restores whatever was focused before. This only
+works for exactly two apps per workspace — `validate` rejects a lone `split`
+without a sibling, percentages that don't add up to 100, or more than two.
 
 ## How it works
 
@@ -185,6 +210,12 @@ commands with `uwsm-app --` so apps end up in the right systemd scope.
    as Lua, so hyprworkplace detects that at runtime and uses `hyprctl eval`
    with `hl.dsp.window.move` / `hl.dsp.exec_cmd` there, falling back to the
    classic dispatcher strings on older versions.
+7. Apps with a `split` are handled last: hyprworkplace waits for both windows
+   to exist, focuses the workspace and the first app's window, and sets the
+   dwindle split ratio with `hl.dsp.layout('splitratio ... exact')`. Since
+   that ratio describes the tiling tree's first child regardless of which
+   window is focused, it measures the resulting sizes and flips the ratio
+   once if the tree happened to place the apps the other way around.
 
 Your own `monitors.lua` is never rewritten, only appended to — and backed up
 before the one time that happens.

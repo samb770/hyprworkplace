@@ -92,6 +92,19 @@ match     = class:^(chromium|Chromium|brave-browser)$
 workspace = 3
 match     = class:^Code$
 autostart = false
+
+# split: zwei Apps am selben Workspace teilen sich die Fläche prozentual
+[app.browser2]
+workspace = 1
+match     = class:^chromium$
+exec      = omarchy launch browser
+split     = 67
+
+[app.terminal2]
+workspace = 1
+match     = class:^foot$
+exec      = uwsm-app -- foot
+split     = 33
 ```
 
 Semantik:
@@ -106,6 +119,9 @@ Semantik:
   Fensterregel **und** Laufzeit-Aktion beim Anwenden (siehe unten).
   `match` ist Pflicht und trägt das Feld im Präfix (`class:`, `title:`,
   `initialClass:`, `initialTitle:`), damit nichts geraten wird.
+- `split = <1-99>` (Prozent) teilt einen Workspace zwischen genau zwei
+  Apps auf, deren Werte sich zu 100 addieren müssen — `validate` prüft
+  das (fehlender Partner, falsche Summe, mehr als zwei Apps sind Fehler).
 - Kommentare sind nur zeilenweise erlaubt (`#`/`;`), damit Regexe und
   Befehle ein `#` enthalten dürfen.
 
@@ -134,8 +150,16 @@ Semantik:
    das zur Laufzeit und nutzt dann `hyprctl eval` mit `hl.dsp.window.move`
    bzw. `hl.dsp.exec_cmd`; auf älteren Versionen bleibt es bei den
    klassischen Dispatcher-Strings.
-5. Aktiven Workplace in `~/.local/state/hyprworkplace/current` merken.
-6. `notify-send` / `o.notify`-Stil: „Workplace ‚Home S' aktiv“.
+5. **Splits anwenden:** Für jedes Workspace-Paar mit `split` wird gewartet,
+   bis beide Fenster existieren, der Workspace und das erste Fenster
+   fokussiert, und per `hl.dsp.layout('splitratio <wert> exact')` das
+   Dwindle-Verhältnis gesetzt. Das Verhältnis gilt immer für das erste
+   Kind im Tiling-Baum — unabhängig vom Fokus — daher wird die
+   resultierende Fenstergröße gemessen und bei Bedarf einmal invertiert.
+   Danach wird der ursprüngliche Fokus (Workspace + Fenster)
+   wiederhergestellt.
+6. Aktiven Workplace in `~/.local/state/hyprworkplace/current` merken.
+7. `notify-send` / `o.notify`-Stil: „Workplace ‚Home S' aktiv“.
 
 ### `edit <name>` / `new <name>`
 
