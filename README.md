@@ -27,7 +27,7 @@ No more editing `monitors.lua` by hand and no Hyprland restart.
 Requires `bash`, `awk`, `sed`, `jq` and Hyprland.
 
 ```bash
-git clone https://github.com/<you>/hyprworkplace.git
+git clone https://github.com/samb770/hyprworkplace.git
 cd hyprworkplace
 ./install.sh --with-examples
 ```

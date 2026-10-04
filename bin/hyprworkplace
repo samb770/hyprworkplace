@@ -2,6 +2,8 @@
 #
 # hyprworkplace - switch between workplaces (monitors, workspaces, apps)
 # on Hyprland and Omarchy.
+#
+# https://github.com/samb770/hyprworkplace
 
 set -euo pipefail
 

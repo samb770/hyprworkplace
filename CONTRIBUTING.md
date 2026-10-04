@@ -5,7 +5,7 @@ Thanks for taking a look. Issues and pull requests are welcome.
 ## Getting set up
 
 ```bash
-git clone https://github.com/<you>/hyprworkplace.git
+git clone https://github.com/samb770/hyprworkplace.git
 cd hyprworkplace
 ./tests/run.sh
 ```
