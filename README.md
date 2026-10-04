@@ -75,6 +75,12 @@ Useful flags: `apply --dry-run` prints the generated Lua instead of applying
 it, `apply --no-apps` leaves your windows alone, and `detect --apply` applies
 the detected workplace right away.
 
+`apply` warns (but doesn't fail) if the workplace expects monitors that
+aren't currently connected. `menu` detects the workplace that best matches
+your connected monitors and puts it first in the list, labelled
+`(detected)` (and `(active)` if it's also the one currently applied), so the
+right choice is pre-selected when you hit `SUPER+SHIFT+W`.
+
 ## Workplace format
 
 Workplaces live in `~/.config/hyprworkplace/workplaces/<name>.conf` and use a

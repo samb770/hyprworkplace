@@ -86,6 +86,64 @@ workplace_enabled_monitors() {
   done | sort
 }
 
+# Enabled monitors of the loaded workplace that are not currently attached,
+# one per line. Requires a workplace to already be loaded.
+workplace_missing_monitors() {
+  local -a connected
+  mapfile -t connected < <(hypr_connected_outputs)
+
+  local mon
+  while read -r mon; do
+    [[ -n $mon ]] || continue
+    if [[ " ${connected[*]} " != *" $mon "* ]]; then
+      printf '%s\n' "$mon"
+    fi
+  done < <(workplace_enabled_monitors)
+}
+
+# Pick the workplace that best fits a set of connected monitors: every
+# monitor it needs must be present, and more matching monitors win. Prints
+# the winning name and returns 0, or prints nothing and returns 1 if none of
+# the candidates are fully satisfied.
+detect_best_workplace() {
+  local connected_list=$1
+  shift
+  local -a connected names=("$@")
+  mapfile -t connected <<<"$connected_list"
+
+  local name mon score best="" best_score=-1 missing
+  for name in "${names[@]}"; do
+    if ! (load_workplace "$name") >/dev/null 2>&1; then
+      warn "skipping invalid workplace '$name'"
+      continue
+    fi
+    load_workplace "$name"
+
+    score=0
+    missing=false
+    while read -r mon; do
+      [[ -n $mon ]] || continue
+      if [[ " ${connected[*]} " == *" $mon "* ]]; then
+        score=$((score + 1))
+      else
+        missing=true
+        break
+      fi
+    done < <(workplace_enabled_monitors)
+
+    if [[ $missing == true ]]; then
+      continue
+    fi
+    if ((score > best_score)); then
+      best=$name
+      best_score=$score
+    fi
+  done
+
+  [[ -n $best ]] || return 1
+  printf '%s\n' "$best"
+}
+
 regex_escape() {
   printf '%s' "$1" | sed -e 's/[][\.^$*+?(){}|\\\/]/\\&/g'
 }
@@ -220,6 +278,12 @@ cmd_apply() {
     return 0
   fi
 
+  local -a missing_monitors
+  mapfile -t missing_monitors < <(workplace_missing_monitors)
+  if ((${#missing_monitors[@]} > 0)); then
+    warn "'${HW_META[name]:-$name}' expects monitor(s) that are not connected: ${missing_monitors[*]} — the layout will not match until they are plugged in."
+  fi
+
   hypr_reload || true
   hypr_force_workspace_monitors
 
@@ -245,12 +309,45 @@ cmd_current() {
 
 cmd_menu() {
   local -a names
-  local choice
+  local choice raw active best="" connected_list
   mapfile -t names < <(list_workplace_names)
   ((${#names[@]} > 0)) || die "no workplaces to pick from"
 
-  choice=$(omarchy_pick "Workplace" "${names[@]}") ||
+  active=$(current_workplace || true)
+
+  if hypr_available; then
+    connected_list=$(hypr_connected_outputs)
+    best=$(detect_best_workplace "$connected_list" "${names[@]}") || best=""
+  fi
+
+  # Put the detected match first so it is pre-selected (menus focus the
+  # first row), and label every entry that is detected and/or active.
+  local -a ordered=() labels=()
+  local name label
+  if [[ -n $best ]]; then
+    ordered+=("$best")
+  fi
+  for name in "${names[@]}"; do
+    [[ $name == "$best" ]] && continue
+    ordered+=("$name")
+  done
+
+  for name in "${ordered[@]}"; do
+    label=$name
+    if [[ $name == "$best" && $name == "$active" ]]; then
+      label="$name  (detected, active)"
+    elif [[ -n $best && $name == "$best" ]]; then
+      label="$name  (detected)"
+    elif [[ $name == "$active" ]]; then
+      label="$name  (active)"
+    fi
+    labels+=("$label")
+  done
+
+  raw=$(omarchy_pick "Workplace" "${labels[@]}") ||
     die "no workplace selected"
+  [[ -n $raw ]] || die "no workplace selected"
+  read -r choice _ <<<"$raw"
   [[ -n $choice ]] || die "no workplace selected"
 
   cmd_apply "$choice"
@@ -447,42 +544,14 @@ cmd_detect() {
   hypr_require
   require_cmd jq
 
-  local -a names connected
+  local -a names
   mapfile -t names < <(list_workplace_names)
   ((${#names[@]} > 0)) || die "no workplaces to choose from"
-  mapfile -t connected < <(hypr_connected_outputs)
 
-  local name mon score best="" best_score=-1 missing
-  for name in "${names[@]}"; do
-    if ! (load_workplace "$name") >/dev/null 2>&1; then
-      warn "skipping invalid workplace '$name'"
-      continue
-    fi
-    load_workplace "$name"
-
-    score=0
-    missing=false
-    while read -r mon; do
-      [[ -n $mon ]] || continue
-      if [[ " ${connected[*]} " == *" $mon "* ]]; then
-        score=$((score + 1))
-      else
-        missing=true
-        break
-      fi
-    done < <(workplace_enabled_monitors)
-
-    if [[ $missing == true ]]; then
-      continue
-    fi
-    if ((score > best_score)); then
-      best=$name
-      best_score=$score
-    fi
-  done
-
-  [[ -n $best ]] ||
-    die "no workplace matches the attached monitors: ${connected[*]}"
+  local connected_list best
+  connected_list=$(hypr_connected_outputs)
+  best=$(detect_best_workplace "$connected_list" "${names[@]}") ||
+    die "no workplace matches the attached monitors: $(tr '\n' ' ' <<<"$connected_list")"
 
   printf '%s\n' "$best"
 

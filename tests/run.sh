@@ -585,6 +585,70 @@ test_detect_needs_hyprland() {
   assert_contains "$out" "Hyprland does not seem to be running"
 }
 
+# Fake a running Hyprland: `hyprctl` logs every invocation and answers just
+# enough (monitors, empty clients, successful eval/reload) for apply/detect/
+# menu to run end to end without a real compositor. $1 is a JSON array of
+# connected monitor names, e.g. '["eDP-1","HDMI-A-1"]'.
+fake_hyprland() (
+  local monitors_json=$1
+  local bindir="$SANDBOX/fakebin"
+  mkdir -p "$bindir"
+  printf '%s' "$monitors_json" >"$SANDBOX/monitors.json"
+  : >"$SANDBOX/hyprctl.log"
+
+  cat >"$bindir/hyprctl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SANDBOX/hyprctl.log"
+case "\$1 \$2" in
+  "monitors all") cat "$SANDBOX/monitors.json" ;;
+  "clients -j") echo '[]' ;;
+  *) ;;
+esac
+exit 0
+EOF
+  chmod +x "$bindir/hyprctl"
+  printf '%s\n' "$bindir"
+)
+
+test_apply_warns_about_missing_monitor() {
+  valid_workplace | write_workplace desk # needs eDP-1 and HDMI-A-1
+
+  local bindir out
+  bindir=$(fake_hyprland '[{"name":"eDP-1"}]') # HDMI-A-1 is not connected
+
+  out=$(HYPRLAND_INSTANCE_SIGNATURE=test PATH="$bindir:$PATH" \
+    "$CLI" apply desk 2>&1) || return 1
+  assert_contains "$out" "HDMI-A-1" || return 1
+  assert_contains "$out" "not connected"
+}
+
+test_menu_preselects_and_labels_the_detected_workplace() {
+  valid_workplace | write_workplace desk # needs eDP-1 + HDMI-A-1 (best match)
+  sed 's/^name        = Desk/name        = Alt/; s/HDMI-A-1/DP-9/g' \
+    < <(valid_workplace) | write_workplace alt # needs eDP-1 + DP-9 (DP-9 missing)
+
+  local bindir
+  bindir=$(fake_hyprland '[{"name":"eDP-1"},{"name":"HDMI-A-1"}]')
+
+  cat >"$bindir/omarchy" <<EOF
+#!/usr/bin/env bash
+# \$1=menu \$2=select \$3=prompt, the rest are the offered options.
+shift 3
+printf '%s\n' "\$1" >"$SANDBOX/first-option"
+printf '%s\n' "\$@" >"$SANDBOX/all-options"
+read -r choice _ <<<"\$1"
+printf '%s\n' "\$choice"
+EOF
+  chmod +x "$bindir/omarchy"
+
+  HYPRLAND_INSTANCE_SIGNATURE=test PATH="$bindir:$PATH" \
+    "$CLI" menu >/dev/null 2>&1 || return 1
+
+  assert_contains "$(<"$SANDBOX/first-option")" "desk" || return 1
+  assert_contains "$(<"$SANDBOX/first-option")" "(detected)" || return 1
+  assert_eq "$("$CLI" current)" "desk"
+}
+
 # --------------------------------------------------------------------------
 # shipped examples
 # --------------------------------------------------------------------------
@@ -772,6 +836,8 @@ main() {
   it "help lists the commands" test_help_lists_the_commands
   it "version is printed" test_version_is_printed
   it "detect needs hyprland" test_detect_needs_hyprland
+  it "apply warns about a missing monitor" test_apply_warns_about_missing_monitor
+  it "menu preselects and labels the detected workplace" test_menu_preselects_and_labels_the_detected_workplace
 
   it "lua literal wraps plain text" test_lua_literal_wraps_plain_text
   it "lua literal needs no escaping" test_lua_literal_needs_no_escaping
