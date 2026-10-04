@@ -1,0 +1,524 @@
+#!/usr/bin/env bash
+#
+# hyprworkplace - switch between workplaces (monitors, workspaces, apps)
+# on Hyprland and Omarchy.
+
+set -euo pipefail
+
+HW_VERSION="0.1.0"
+
+_hw_self=$(readlink -f "${BASH_SOURCE[0]}")
+HW_ROOT=$(cd "$(dirname "$_hw_self")/.." && pwd)
+HW_LIB="${HW_LIB:-$HW_ROOT/lib}"
+HW_TEMPLATES="${HW_TEMPLATES:-$HW_ROOT/templates}"
+
+# shellcheck source=../lib/common.sh
+source "$HW_LIB/common.sh"
+# shellcheck source=../lib/config.sh
+source "$HW_LIB/config.sh"
+# shellcheck source=../lib/lua.sh
+source "$HW_LIB/lua.sh"
+# shellcheck source=../lib/hypr.sh
+source "$HW_LIB/hypr.sh"
+# shellcheck source=../lib/omarchy.sh
+source "$HW_LIB/omarchy.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  hyprworkplace <command> [arguments]
+
+Switch between workplaces: monitor setup, workspace-to-monitor mapping
+and which apps live on which workspace.
+
+Commands:
+  list                      List all workplaces
+  show <name>               Show a workplace in detail
+  apply <name>              Apply a workplace
+  current                   Print the active workplace
+  menu                      Pick a workplace interactively and apply it
+  new <name>                Create a workplace
+  edit <name>               Open a workplace in $EDITOR, then validate it
+  validate <name>           Check a workplace for errors
+  remove <name>             Delete a workplace
+  detect                    Suggest the workplace matching the attached monitors
+  install                   Install the Hyprland loader and the Omarchy menu entry
+  uninstall                 Remove both again
+  version                   Print the version
+
+Options:
+  new  --from-current       Seed the workplace from the running session
+  new  --force              Overwrite an existing workplace
+  apply --no-apps           Only monitors and workspaces, do not touch windows
+  apply --dry-run           Print the generated Lua instead of applying it
+  detect --apply            Apply the detected workplace right away
+  remove --force            Do not ask for confirmation
+
+Examples:
+  hyprworkplace new desk --from-current
+  hyprworkplace edit desk
+  hyprworkplace apply desk
+EOF
+}
+
+# --------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------
+
+# Load and validate a workplace by name.
+load_workplace() {
+  local name=$1 file
+  require_workplace "$name"
+  file=$(workplace_file "$name")
+  config_load "$file"
+  config_validate "$file"
+}
+
+# Monitors of the loaded workplace that are enabled, one per line, sorted.
+workplace_enabled_monitors() {
+  local mon
+  for mon in "${HW_MONITORS[@]}"; do
+    if [[ ${HW_MON[$mon|enabled]:-true} != false ]]; then
+      printf '%s\n' "$mon"
+    fi
+  done | sort
+}
+
+regex_escape() {
+  printf '%s' "$1" | sed -e 's/[][\.^$*+?(){}|\\\/]/\\&/g'
+}
+
+slugify() {
+  printf '%s' "$1" |
+    tr '[:upper:]' '[:lower:]' |
+    sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-//' -e 's/-$//'
+}
+
+confirm() {
+  local prompt=$1 reply
+  [[ -t 0 ]] || return 1
+  read -r -p "$prompt [y/N] " reply
+  [[ $reply == [yY] || $reply == [yY][eE][sS] ]]
+}
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+cmd_list() {
+  local -a names
+  mapfile -t names < <(list_workplace_names)
+
+  if ((${#names[@]} == 0)); then
+    info "No workplaces yet. Create one with: hyprworkplace new <name> --from-current"
+    return 0
+  fi
+
+  local active name file marker description
+  active=$(current_workplace || true)
+
+  for name in "${names[@]}"; do
+    file=$(workplace_file "$name")
+    description=$(
+      awk -F= '
+        /^[[:space:]]*\[/ { in_wp = ($0 ~ /^[[:space:]]*\[workplace\]/) }
+        in_wp && /^[[:space:]]*description[[:space:]]*=/ {
+          sub(/^[^=]*=[[:space:]]*/, ""); print; exit
+        }
+      ' "$file"
+    )
+    if [[ $name == "$active" ]]; then
+      marker="${HW_GREEN}*${HW_RESET}"
+    else
+      marker=" "
+    fi
+    printf '%s %s%-16s%s %s%s%s\n' \
+      "$marker" "$HW_BOLD" "$name" "$HW_RESET" \
+      "$HW_DIM" "$description" "$HW_RESET"
+  done
+}
+
+cmd_show() {
+  local name=${1:-}
+  [[ -n $name ]] || die "usage: hyprworkplace show <name>"
+  load_workplace "$name"
+
+  local mon ws app
+
+  printf '%s%s%s' "$HW_BOLD" "${HW_META[name]:-$name}" "$HW_RESET"
+  if [[ $name == "$(current_workplace || true)" ]]; then
+    printf ' %s(active)%s' "$HW_GREEN" "$HW_RESET"
+  fi
+  printf '\n'
+  if [[ -n ${HW_META[description]:-} ]]; then
+    printf '%s%s%s\n' "$HW_DIM" "${HW_META[description]}" "$HW_RESET"
+  fi
+  printf '%sfile: %s%s\n\n' "$HW_DIM" "$(workplace_file "$name")" "$HW_RESET"
+
+  printf '%sMonitors%s\n' "$HW_BOLD" "$HW_RESET"
+  for mon in "${HW_MONITORS[@]}"; do
+    if [[ ${HW_MON[$mon|enabled]:-true} == false ]]; then
+      printf '  %-14s %sdisabled%s\n' "$mon" "$HW_DIM" "$HW_RESET"
+      continue
+    fi
+    printf '  %-14s %s at %s, scale %s\n' \
+      "$mon" "${HW_MON[$mon|mode]}" \
+      "${HW_MON[$mon|position]:-auto}" "${HW_MON[$mon|scale]:-1}"
+  done
+
+  if ((${#HW_WS_IDS[@]} > 0)); then
+    printf '\n%sWorkspaces%s\n' "$HW_BOLD" "$HW_RESET"
+    for ws in "${HW_WS_IDS[@]}"; do
+      printf '  %-14s -> %s\n' "$ws" "${HW_WS[$ws]}"
+    done
+  fi
+
+  if ((${#HW_APPS[@]} > 0)); then
+    printf '\n%sApps%s\n' "$HW_BOLD" "$HW_RESET"
+    for app in "${HW_APPS[@]}"; do
+      printf '  %-14s workspace %-4s %s%s%s\n' \
+        "$app" "${HW_APP[$app|workspace]}" \
+        "$HW_DIM" "${HW_APP[$app|match]}" "$HW_RESET"
+      if [[ ${HW_APP[$app|autostart]:-true} == true ]]; then
+        printf '  %-14s %sexec: %s%s\n' \
+          "" "$HW_DIM" "${HW_APP[$app|exec]}" "$HW_RESET"
+      fi
+    done
+  fi
+}
+
+cmd_apply() {
+  local name="" no_apps=false dry_run=false
+
+  while (($# > 0)); do
+    case $1 in
+      --no-apps) no_apps=true ;;
+      --dry-run) dry_run=true ;;
+      -*) die "unknown option for apply: $1" ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+
+  [[ -n $name ]] || die "usage: hyprworkplace apply <name>"
+  load_workplace "$name"
+
+  if [[ $dry_run == true ]]; then
+    lua_generate "$name"
+    return 0
+  fi
+
+  lua_write "$name"
+  loader_ensure
+  set_current_workplace "$name"
+
+  if ! hypr_available; then
+    warn "Hyprland is not running, the workplace will be applied at the next start"
+    return 0
+  fi
+
+  hypr_reload || true
+
+  if [[ $no_apps == false ]]; then
+    hypr_apply_apps
+  fi
+
+  ok "Workplace '${HW_META[name]:-$name}' applied"
+  omarchy_notify "Workplace '${HW_META[name]:-$name}' applied"
+}
+
+cmd_current() {
+  local name
+  name=$(current_workplace) || die "no workplace applied yet"
+  printf '%s\n' "$name"
+}
+
+cmd_menu() {
+  local -a names
+  local choice
+  mapfile -t names < <(list_workplace_names)
+  ((${#names[@]} > 0)) || die "no workplaces to pick from"
+
+  choice=$(omarchy_pick "Workplace" "${names[@]}") ||
+    die "no workplace selected"
+  [[ -n $choice ]] || die "no workplace selected"
+
+  cmd_apply "$choice"
+}
+
+cmd_validate() {
+  local name=${1:-}
+  [[ -n $name ]] || die "usage: hyprworkplace validate <name>"
+  load_workplace "$name"
+  ok "Workplace '$name' is valid"
+}
+
+cmd_new() {
+  local name="" from_current=false force=false
+
+  while (($# > 0)); do
+    case $1 in
+      --from-current) from_current=true ;;
+      --force) force=true ;;
+      -*) die "unknown option for new: $1" ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+
+  [[ -n $name ]] || die "usage: hyprworkplace new <name> [--from-current]"
+  validate_name "$name"
+  ensure_dirs
+
+  local file
+  file=$(workplace_file "$name")
+  if [[ -e $file && $force == false ]]; then
+    die "workplace '$name' already exists (use --force to overwrite)"
+  fi
+
+  if [[ $from_current == true ]]; then
+    hypr_require
+    require_cmd jq
+    generate_from_current "$name" >"$file"
+  else
+    [[ -f $HW_TEMPLATES/workplace.conf ]] ||
+      die "template not found: $HW_TEMPLATES/workplace.conf"
+    sed -e "s/@NAME@/$name/g" "$HW_TEMPLATES/workplace.conf" >"$file"
+  fi
+
+  ok "Created $file"
+
+  if [[ -t 0 ]]; then
+    cmd_edit "$name"
+  else
+    info "Edit it with: hyprworkplace edit $name"
+  fi
+}
+
+# Build a workplace file from the running Hyprland session.
+generate_from_current() {
+  local name=$1
+  local monitors workspaces clients
+
+  monitors=$(hyprctl monitors -j)
+  workspaces=$(hyprctl workspaces -j)
+  clients=$(hypr_clients_json)
+
+  printf '# Generated by: hyprworkplace new %s --from-current\n' "$name"
+  printf '# Adjust it to taste, then apply it with: hyprworkplace apply %s\n\n' "$name"
+
+  printf '[workplace]\n'
+  printf 'name        = %s\n' "$name"
+  printf 'description = Captured from the running session on %s\n' "$(date +%F)"
+  printf '# Set to "disable" to switch off monitors that are not listed below.\n'
+  printf 'unlisted    = auto\n\n'
+
+  jq -r '
+    sort_by(.x, .y)[] |
+    "[monitor." + .name + "]\n" +
+    "mode     = " + (.width|tostring) + "x" + (.height|tostring)
+                  + "@" + ((.refreshRate * 100 | round / 100)|tostring) + "\n" +
+    "position = " + (.x|tostring) + "x" + (.y|tostring) + "\n" +
+    "scale    = " + (.scale|tostring) + "\n" +
+    (if .transform != 0 then "transform = " + (.transform|tostring) + "\n" else "" end)
+  ' <<<"$monitors"
+
+  printf '[workspaces]\n'
+  jq -r '
+    map(select(.id > 0)) | sort_by(.id)[] |
+    (.id|tostring) + " = " + .monitor
+  ' <<<"$workspaces"
+  printf '\n'
+
+  local class ws slug
+  local -a seen=()
+  while IFS=$'\t' read -r class ws; do
+    [[ -n $class ]] || continue
+    slug=$(slugify "$class")
+    [[ -n $slug ]] || continue
+    if [[ " ${seen[*]-} " == *" $slug "* ]]; then
+      continue
+    fi
+    seen+=("$slug")
+    printf '[app.%s]\n' "$slug"
+    printf 'workspace = %s\n' "$ws"
+    printf 'match     = class:^%s$\n' "$(regex_escape "$class")"
+    printf '# Add the launch command and switch autostart on to start it with\n'
+    printf '# the workplace, for example: exec = uwsm-app -- %s\n' "$class"
+    printf 'autostart = false\n\n'
+  done < <(
+    jq -r '
+      map(select(.class != "" and .workspace.id > 0)) |
+      unique_by(.class)[] |
+      .class + "\t" + (.workspace.id|tostring)
+    ' <<<"$clients"
+  )
+}
+
+cmd_edit() {
+  local name=${1:-}
+  [[ -n $name ]] || die "usage: hyprworkplace edit <name>"
+  require_workplace "$name"
+
+  local file editor
+  file=$(workplace_file "$name")
+  editor=${EDITOR:-${VISUAL:-nano}}
+
+  while true; do
+    "$editor" "$file" || die "editor exited with an error"
+
+    if (load_workplace "$name") 2>/dev/null; then
+      break
+    fi
+
+    # Re-run visibly so the user sees what is wrong.
+    (load_workplace "$name") || true
+    if ! confirm "Workplace '$name' has errors. Edit again?"; then
+      return 1
+    fi
+  done
+
+  ok "Workplace '$name' is valid"
+
+  if hypr_available && confirm "Apply '$name' now?"; then
+    cmd_apply "$name"
+  fi
+}
+
+cmd_remove() {
+  local name="" force=false
+
+  while (($# > 0)); do
+    case $1 in
+      --force | -f) force=true ;;
+      -*) die "unknown option for remove: $1" ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+
+  [[ -n $name ]] || die "usage: hyprworkplace remove <name>"
+  require_workplace "$name"
+
+  if [[ $force == false ]] && ! confirm "Delete workplace '$name'?"; then
+    info "Aborted"
+    return 1
+  fi
+
+  rm -f "$(workplace_file "$name")"
+
+  if [[ $name == "$(current_workplace || true)" ]]; then
+    rm -f "$HW_CURRENT_FILE"
+  fi
+
+  ok "Removed workplace '$name'"
+}
+
+# Pick the workplace that best fits the attached monitors: every monitor it
+# needs must be present, and more matching monitors win.
+cmd_detect() {
+  local apply=false
+  while (($# > 0)); do
+    case $1 in
+      --apply) apply=true ;;
+      *) die "unknown option for detect: $1" ;;
+    esac
+    shift
+  done
+
+  hypr_require
+  require_cmd jq
+
+  local -a names connected
+  mapfile -t names < <(list_workplace_names)
+  ((${#names[@]} > 0)) || die "no workplaces to choose from"
+  mapfile -t connected < <(hypr_connected_outputs)
+
+  local name mon score best="" best_score=-1 missing
+  for name in "${names[@]}"; do
+    if ! (load_workplace "$name") >/dev/null 2>&1; then
+      warn "skipping invalid workplace '$name'"
+      continue
+    fi
+    load_workplace "$name"
+
+    score=0
+    missing=false
+    while read -r mon; do
+      [[ -n $mon ]] || continue
+      if [[ " ${connected[*]} " == *" $mon "* ]]; then
+        score=$((score + 1))
+      else
+        missing=true
+        break
+      fi
+    done < <(workplace_enabled_monitors)
+
+    if [[ $missing == true ]]; then
+      continue
+    fi
+    if ((score > best_score)); then
+      best=$name
+      best_score=$score
+    fi
+  done
+
+  [[ -n $best ]] ||
+    die "no workplace matches the attached monitors: ${connected[*]}"
+
+  printf '%s\n' "$best"
+
+  if [[ $apply == true ]]; then
+    cmd_apply "$best"
+  fi
+}
+
+cmd_install() {
+  ensure_dirs
+  loader_ensure
+  omarchy_menu_install
+  info ""
+  info "Suggested keybinding for ~/.config/hypr/bindings.lua:"
+  info '  o.bind("SUPER + SHIFT + W", "Workplace", "hyprworkplace menu")'
+}
+
+cmd_uninstall() {
+  loader_remove
+  omarchy_menu_remove
+  info "Your workplaces in $HW_WORKPLACES_DIR were kept."
+}
+
+# --------------------------------------------------------------------------
+# dispatch
+# --------------------------------------------------------------------------
+
+main() {
+  local cmd=${1:-help}
+  if (($# > 0)); then
+    shift
+  fi
+
+  case $cmd in
+    list | ls) cmd_list "$@" ;;
+    show | info) cmd_show "$@" ;;
+    apply | switch | set) cmd_apply "$@" ;;
+    current) cmd_current "$@" ;;
+    menu | pick) cmd_menu "$@" ;;
+    new | create) cmd_new "$@" ;;
+    edit) cmd_edit "$@" ;;
+    validate | check) cmd_validate "$@" ;;
+    remove | rm | delete) cmd_remove "$@" ;;
+    detect) cmd_detect "$@" ;;
+    install) cmd_install "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    version | --version | -v) printf 'hyprworkplace %s\n' "$HW_VERSION" ;;
+    help | --help | -h) usage ;;
+    *)
+      printf 'hyprworkplace: unknown command "%s"\n\n' "$cmd" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

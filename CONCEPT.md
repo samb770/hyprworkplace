@@ -51,6 +51,8 @@ Lua-Kenntnisse:
 [workplace]
 name        = Home S
 description = Laptop + 2x Dell am Schreibtisch
+unlisted    = disable
+gdk_scale   = 2
 
 [monitor.eDP-1]
 mode     = 1920x1200
@@ -85,19 +87,27 @@ workspace = 2
 exec      = omarchy launch browser
 match     = class:^(chromium|Chromium|brave-browser)$
 
+# autostart = false verschiebt nur ein offenes Fenster, startet nie
 [app.editor]
 workspace = 3
-exec      = code
 match     = class:^Code$
-autostart = false        # nur verschieben, falls offen; nicht starten
+autostart = false
 ```
 
 Semantik:
-- `[monitor.*]` → `hl.monitor({...})`; nicht gelistete Monitore werden
-  per `disable` abgeschaltet.
-- `[workspaces]` → `hl.workspace_rule({workspace, monitor})`.
+- `[workplace] unlisted` steuert nicht gelistete Monitore: `auto`
+  (preferred/auto, Standard) oder `disable` (abschalten).
+- `[monitor.*]` → `hl.monitor({...})`. `mode` ist Pflicht, optional sind
+  `position`, `scale`, `transform`, `vrr`, `mirror`, `bitdepth` und
+  `enabled = false`.
+- `[workspaces]` → `hl.workspace_rule({workspace, monitor})`. Der Monitor
+  muss oben definiert und aktiv sein.
 - `[app.*]` → `o.window(match, { workspace = N })` als persistente
   Fensterregel **und** Laufzeit-Aktion beim Anwenden (siehe unten).
+  `match` ist Pflicht und trägt das Feld im Präfix (`class:`, `title:`,
+  `initialClass:`, `initialTitle:`), damit nichts geraten wird.
+- Kommentare sind nur zeilenweise erlaubt (`#`/`;`), damit Regexe und
+  Befehle ein `#` enthalten dürfen.
 
 ## Funktionsweise
 
@@ -106,10 +116,12 @@ Semantik:
 1. **Validieren** des Workplace (Syntax, Monitor-Namen gegen
    `hyprctl monitors all -j`).
 2. **Lua generieren:** Das Tool schreibt
-   `~/.config/hypr/workplace.lua` (Monitore, Workspace-Regeln,
-   Fensterregeln) und sorgt einmalig dafür, dass `monitors.lua` diese
-   Datei per `dofile()` lädt. Dadurch ist der Workplace **persistent**
-   — er überlebt Hyprland-Neustarts und Logins.
+   `~/.local/state/hyprworkplace/workplace.lua` (Monitore,
+   Workspace-Regeln, Fensterregeln) und hängt einmalig einen markierten
+   Loader-Block ans Ende von `~/.config/hypr/monitors.lua`, der die
+   Datei per `dofile()` lädt. Weil er zuletzt läuft, überschreibt er die
+   eigene Config — und der Workplace ist **persistent**, er überlebt
+   Reload, Logout und Neustart. Vorher wird `monitors.lua` gesichert.
 3. **Reload:** `hyprctl reload` + `hyprctl configerrors` prüfen.
 4. **Apps anwenden** (über `hyprctl --batch`, um Flackern zu vermeiden):
    - App läuft bereits (`match` gegen `hyprctl clients -j`) →
@@ -128,11 +140,13 @@ Semantik:
   offene Fenster aus `hyprctl` und schreibt sie als Startpunkt in die
   Datei. Das ist der schnellste Weg, einen neuen Workplace anzulegen.
 
-### `detect` / `watch` (Phase 2)
+### `detect` / `watch`
 
 - `detect` vergleicht angeschlossene Monitore mit allen Workplaces und
-  schlägt den passenden vor (`--apply` wendet ihn direkt an).
-- `watch` lauscht auf Hyprland-IPC-Events (`monitoradded`/
+  schlägt den passenden vor (`--apply` wendet ihn direkt an). Gewählt
+  wird der Workplace, dessen Monitore alle vorhanden sind und der davon
+  die meisten nutzt.
+- `watch` (geplant) lauscht auf Hyprland-IPC-Events (`monitoradded`/
   `monitorremoved`) und ruft `detect --apply` auf. Läuft als
   systemd-user-Service oder wird über `post-boot.d`-Hook gestartet.
 
@@ -147,20 +161,26 @@ hyprworkplace new <name> [--from-current]
 hyprworkplace edit <name>            # im $EDITOR öffnen, danach validieren
 hyprworkplace validate <name>
 hyprworkplace remove <name>
-hyprworkplace detect [--apply]       # Phase 2
-hyprworkplace watch                  # Phase 2
+hyprworkplace detect [--apply]       # passenden Workplace erkennen
 hyprworkplace menu                   # Picker via `omarchy menu select`
+hyprworkplace install | uninstall    # Loader + Menü ein-/ausrichten
+hyprworkplace watch                  # geplant (Phase 2)
 ```
+
+Flags: `apply --dry-run` zeigt nur das generierte Lua, `apply --no-apps`
+lässt Fenster unangetastet, `new --from-current` liest den Ist-Zustand.
 
 ## Omarchy-Integration
 
-- **Menü:** Eintrag in `~/.config/omarchy/extensions/omarchy-menu.jsonc`
-  mit einem Untermenü pro Workplace (`checked` zeigt den aktiven an).
-  Wird bei `hyprworkplace install` angelegt.
+- **Menü:** Ein „Workplace"-Eintrag in
+  `~/.config/omarchy/extensions/omarchy-menu.jsonc`, der den Picker
+  öffnet. Wird bei `hyprworkplace install` angelegt und ist über
+  Marker-Kommentare wieder entfernbar.
 - **Keybinding:** Vorschlag `SUPER + SHIFT + W` → `hyprworkplace menu`
   (Picker über `omarchy menu select`).
-- **Hooks:** `post-boot.d`-Hook wendet beim Login den zuletzt aktiven
-  oder per `detect` erkannten Workplace an.
+- **Hooks (geplant):** `post-boot.d`-Hook wendet beim Login den zuletzt
+  aktiven oder per `detect` erkannten Workplace an. Bis dahin genügt der
+  Loader-Block, da er den aktiven Workplace ohnehin bei jedem Start lädt.
 - **Bar (optional, Phase 3):** Widget mit dem aktiven Workplace-Namen,
   basierend auf einem geklonten Omarchy-Shell-Plugin.
 - **Stil:** Hilfe-Ausgabe und Fehlermeldungen folgen dem Format der
@@ -172,18 +192,16 @@ hyprworkplace menu                   # Picker via `omarchy menu select`
 hyprworkplace/
 ├── bin/hyprworkplace          # Haupt-CLI (Bash)
 ├── lib/
+│   ├── common.sh              # Pfade, Logging, Lua-Quoting
 │   ├── config.sh              # INI-Parser, Validierung
-│   ├── lua.sh                 # Lua-Generator (monitors/workspaces/windows)
-│   ├── hypr.sh                # hyprctl-Wrapper, Client-Matching
-│   └── omarchy.sh             # Menü/Hook/Picker-Integration (optional)
-├── templates/
-│   ├── workplace.conf         # Vorlage für `new`
-│   └── omarchy-menu.jsonc     # Menü-Snippet
-├── examples/
-│   ├── home-s.conf
-│   └── laptop-only.conf
-├── install.sh                 # Symlink nach ~/.local/bin, Menü/Hook einrichten
-├── tests/                     # bats-Tests für Parser & Lua-Generator
+│   ├── lua.sh                 # Lua-Generator + Loader-Verwaltung
+│   ├── hypr.sh                # hyprctl-Wrapper, Fenster-Matching
+│   └── omarchy.sh             # Menü, Picker, Notifications (optional)
+├── templates/workplace.conf   # Vorlage für `new`
+├── examples/                  # home-s, home-m, laptop
+├── tests/run.sh               # Testsuite (ohne Fremdabhängigkeiten)
+├── install.sh                 # Symlink + Loader + Menü
+├── .github/workflows/ci.yml   # shellcheck + Tests
 ├── README.md
 ├── CONTRIBUTING.md
 ├── LICENSE                    # MIT
@@ -198,7 +216,10 @@ hyprworkplace/
   Keyword-Strings von Hand.
 - Installation: `git clone` + `./install.sh`; später AUR-Paket
   (`hyprworkplace-git`).
-- Tests mit `bats`, Linting mit `shellcheck` (CI via GitHub Actions).
+- Tests: `tests/run.sh`, eine reine Bash-Suite ohne Fremdabhängigkeiten,
+  die in einer Sandbox (`HW_CONFIG_HOME`/`HW_STATE_HOME`/`HW_HYPR_CONFIG`)
+  läuft und das generierte Lua mit `luac -p` gegenprüft. Linting mit
+  `shellcheck -x`, beides in der GitHub-Actions-CI.
 
 ## Nicht-Ziele
 
@@ -209,21 +230,29 @@ hyprworkplace/
 - Keine Fenster-Layouts innerhalb eines Workspaces (Tiling-Positionen) —
   das bleibt Hyprland bzw. Omarchys Workspace-Layouts überlassen.
 
-## Roadmap
+## Getroffene Entscheidungen
 
-| Phase | Inhalt |
-|-------|--------|
-| 1 | `list/show/apply/current/new/edit/validate/remove`, Lua-Generator, Beispiele, README, MIT, Tests |
-| 2 | `detect`, `watch`, post-boot-Hook, Menü-Integration, `--from-current` |
-| 3 | Bar-Widget, AUR-Paket, pro-Workplace Overrides (Wallpaper, Idle-Zeit) |
+1. **Lua statt `hyprctl keyword`.** `apply` erzeugt
+   `~/.local/state/hyprworkplace/workplace.lua` und lässt Hyprland per
+   `hyprctl reload` neu laden. Damit ist der Workplace persistent und es
+   gibt nur eine Quelle der Wahrheit. Ausnahme: die App-Platzierung
+   (verschieben/starten) passiert zur Laufzeit über `hyprctl`.
+2. **Matching:** `match` ist für jede App Pflicht und trägt das Feld im
+   Präfix — `class:`, `title:`, `initialClass:` oder `initialTitle:`.
+   Geraten wird nichts; `new --from-current` füllt es automatisch und
+   escaped die Regex korrekt.
+3. **`watch`** ist auf Phase 2 verschoben. `detect` ist bereits da und
+   deckt den manuellen Fall ab.
+4. **Lizenz MIT**, Projektname `hyprworkplace` bestätigt.
 
-## Offene Entscheidungen
+## Stand der Umsetzung
 
-1. Soll `apply` zusätzlich zur Lua-Generierung auch sofort
-   `hyprctl keyword monitor` setzen (schnellerer Effekt), oder reicht
-   `hyprctl reload`?
-2. Matching-Default für Apps: nur `class`, oder `class` + `title` wie im
-   Beispiel? Vorschlag: `class` als Default, `title` optional.
-3. `watch`: systemd-user-Service (robust) vs. Start über
-   `post-boot.d`-Hook (einfacher)? Vorschlag: beides anbieten,
-   Hook als Default.
+| Phase | Inhalt | Status |
+|-------|--------|--------|
+| 1 | `list/show/apply/current/menu/new/edit/validate/remove`, Lua-Generator, Loader, Beispiele, README, MIT, 40 Tests, CI | **fertig** |
+| 2 | `detect` | **fertig** |
+| 2 | `watch` (Hyprland-IPC), post-boot-Hook | offen |
+| 3 | Bar-Widget, AUR-Paket, Wallpaper/Idle pro Workplace | offen |
+
+Menü-Integration (`omarchy-menu.jsonc`), Picker über
+`omarchy menu select` und Notifications sind in Phase 1 mitgeliefert.

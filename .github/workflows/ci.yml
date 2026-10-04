@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq shellcheck lua5.4
+
+      - name: Shellcheck
+        run: shellcheck -x bin/hyprworkplace lib/*.sh install.sh tests/run.sh
+
+      - name: Tests
+        run: ./tests/run.sh
