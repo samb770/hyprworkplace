@@ -10,6 +10,8 @@ and the road:
 - **Workspaces** — which virtual desktop lives on which monitor
 - **Apps** — which app belongs on which workspace, moved there or launched
 
+Example output, with workplaces named after the author's own setups:
+
 ```console
 $ hyprworkplace list
 * home-s           Laptop with two external 1920x1200 monitors
