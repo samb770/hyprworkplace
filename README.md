@@ -169,9 +169,12 @@ commands with `uwsm-app --` so apps end up in the right systemd scope.
    generated file, so it overrides whatever you configured above it — and the
    workplace survives reloads, logouts and reboots.
 4. `hyprctl reload` applies it, and `hyprctl configerrors` is checked.
-5. Running windows are moved with a single batched `hyprctl --batch`, and
+5. Running windows are moved to their workspace without stealing focus, and
    missing apps are launched straight onto their workspace with
-   `[workspace N silent]`.
+   `[workspace N silent]`. Hyprland 0.52 and newer parse `hyprctl dispatch`
+   as Lua, so hyprworkplace detects that at runtime and uses `hyprctl eval`
+   with `hl.dsp.window.move` / `hl.dsp.exec_cmd` there, falling back to the
+   classic dispatcher strings on older versions.
 
 Your own `monitors.lua` is never rewritten, only appended to — and backed up
 before the one time that happens.

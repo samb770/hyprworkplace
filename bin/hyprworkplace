@@ -191,6 +191,7 @@ cmd_show() {
 
 cmd_apply() {
   local name="" no_apps=false dry_run=false
+  local app_status=0
 
   while (($# > 0)); do
     case $1 in
@@ -222,7 +223,13 @@ cmd_apply() {
   hypr_reload || true
 
   if [[ $no_apps == false ]]; then
-    hypr_apply_apps
+    hypr_apply_apps || app_status=1
+  fi
+
+  if ((app_status != 0)); then
+    warn "Workplace '${HW_META[name]:-$name}' applied, but some apps could not be placed"
+    omarchy_notify "Workplace '${HW_META[name]:-$name}' applied with warnings"
+    return 1
   fi
 
   ok "Workplace '${HW_META[name]:-$name}' applied"

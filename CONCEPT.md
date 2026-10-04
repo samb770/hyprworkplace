@@ -123,11 +123,17 @@ Semantik:
    eigene Config — und der Workplace ist **persistent**, er überlebt
    Reload, Logout und Neustart. Vorher wird `monitors.lua` gesichert.
 3. **Reload:** `hyprctl reload` + `hyprctl configerrors` prüfen.
-4. **Apps anwenden** (über `hyprctl --batch`, um Flackern zu vermeiden):
-   - App läuft bereits (`match` gegen `hyprctl clients -j`) →
-     `movetoworkspacesilent`.
+4. **Apps anwenden** (ohne den Fokus zu verschieben):
+   - App läuft bereits (`match` gegen `hyprctl clients -j`) → Fenster auf
+     seinen Workspace verschieben.
    - App läuft nicht und `autostart` ≠ false →
      `exec "[workspace N silent] <exec>"`.
+
+   Ab Hyprland 0.52 ist `hyprctl dispatch` ein Lua-Ausdruck, die alte
+   `dispatcher args`-Form ist dort ein Syntaxfehler. hyprworkplace erkennt
+   das zur Laufzeit und nutzt dann `hyprctl eval` mit `hl.dsp.window.move`
+   bzw. `hl.dsp.exec_cmd`; auf älteren Versionen bleibt es bei den
+   klassischen Dispatcher-Strings.
 5. Aktiven Workplace in `~/.local/state/hyprworkplace/current` merken.
 6. `notify-send` / `o.notify`-Stil: „Workplace ‚Home S' aktiv“.
 

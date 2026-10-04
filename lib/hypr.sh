@@ -38,26 +38,64 @@ hypr_reload() {
   return 0
 }
 
-_hypr_batch() {
-  # Join the given dispatch commands with " ; " and send them in one go.
-  local joined=""
-  local cmd
-  for cmd in "$@"; do
-    if [[ -n $joined ]]; then
-      joined+=" ; "
+# Hyprland 0.52+ parses `hyprctl dispatch` as Lua, so the legacy
+# "dispatcher args" form is a syntax error there. Detect which API this
+# compositor speaks and cache the answer for the rest of the run.
+HW_HYPR_API=""
+
+hypr_api() {
+  if [[ -z $HW_HYPR_API ]]; then
+    if hyprctl eval 'return 1' >/dev/null 2>&1; then
+      HW_HYPR_API=lua
+    else
+      HW_HYPR_API=legacy
     fi
-    joined+="$cmd"
+  fi
+  printf '%s\n' "$HW_HYPR_API"
+}
+
+# Wrap an arbitrary string as a Lua long-bracket literal. The level grows
+# until the closing sequence does not occur inside the payload, so no
+# escaping of quotes or backslashes is ever needed.
+_lua_literal() {
+  local s=$1 eq=""
+  while [[ $s == *"]$eq]"* ]]; do
+    eq+="="
   done
-  [[ -n $joined ]] || return 0
-  hyprctl --batch "$joined" >/dev/null 2>&1 ||
-    warn "some hyprctl dispatches failed"
+  printf '[%s[%s]%s]' "$eq" "$s" "$eq"
+}
+
+# Move a single window to a workspace without following it.
+hypr_move_window() {
+  local ws=$1 addr=$2 lua
+
+  if [[ $(hypr_api) == lua ]]; then
+    lua="return hl.dispatch(hl.dsp.window.move({ workspace = $(_lua_literal "$ws"),"
+    lua+=" window = $(_lua_literal "address:$addr"), follow = false }))"
+    hyprctl eval "$lua" >/dev/null 2>&1
+  else
+    hyprctl dispatch movetoworkspacesilent "$ws,address:$addr" >/dev/null 2>&1
+  fi
+}
+
+# Launch a command directly on a workspace, without switching to it.
+hypr_exec_on_workspace() {
+  local ws=$1 cmd=$2 rule
+
+  rule="[workspace $ws silent] $cmd"
+  if [[ $(hypr_api) == lua ]]; then
+    hyprctl eval "return hl.dispatch(hl.dsp.exec_cmd($(_lua_literal "$rule")))" \
+      >/dev/null 2>&1
+  else
+    hyprctl dispatch exec "$rule" >/dev/null 2>&1
+  fi
 }
 
 # Move already-running windows to their workspace and launch missing apps.
 hypr_apply_apps() {
   local clients app field regex ws exec_cmd addr
-  local -a addrs=() batch=()
-  local moved=0 launched=0 skipped=0
+  local -a addrs=()
+  local moved=0 launched=0 skipped=0 failed=0
 
   ((${#HW_APPS[@]} > 0)) || return 0
 
@@ -77,9 +115,13 @@ hypr_apply_apps() {
     if ((${#addrs[@]} > 0)); then
       for addr in "${addrs[@]}"; do
         [[ -n $addr ]] || continue
-        batch+=("dispatch movetoworkspacesilent $ws,address:$addr")
+        if hypr_move_window "$ws" "$addr"; then
+          moved=$((moved + 1))
+        else
+          failed=$((failed + 1))
+          warn "could not move a window of '$app' to workspace $ws"
+        fi
       done
-      moved=$((moved + ${#addrs[@]}))
       continue
     fi
 
@@ -89,15 +131,19 @@ hypr_apply_apps() {
     fi
 
     exec_cmd=${HW_APP[$app|exec]}
-    # Launched separately: exec arguments may contain the batch separator.
-    if hyprctl dispatch exec "[workspace $ws silent] $exec_cmd" >/dev/null 2>&1; then
+    if hypr_exec_on_workspace "$ws" "$exec_cmd"; then
       launched=$((launched + 1))
     else
+      failed=$((failed + 1))
       warn "could not launch '$app': $exec_cmd"
     fi
   done
 
-  _hypr_batch "${batch[@]}"
+  if ((failed > 0)); then
+    printf 'apps: %d moved, %d launched, %d skipped, %d failed\n' \
+      "$moved" "$launched" "$skipped" "$failed" >&2
+    return 1
+  fi
 
   printf 'apps: %d moved, %d launched, %d skipped\n' \
     "$moved" "$launched" "$skipped" >&2

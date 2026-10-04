@@ -612,6 +612,39 @@ test_template_is_valid() {
 
 # --------------------------------------------------------------------------
 
+# Run _lua_literal in a subshell; lib/hypr.sh only defines functions on load.
+lua_literal() (
+  # shellcheck source=../lib/hypr.sh
+  source "$ROOT/lib/hypr.sh"
+  _lua_literal "$1"
+)
+
+test_lua_literal_wraps_plain_text() {
+  assert_eq "$(lua_literal 'uwsm-app -- foot')" '[[uwsm-app -- foot]]'
+}
+
+test_lua_literal_needs_no_escaping() {
+  assert_eq "$(lua_literal 'a "quote" and a \ backslash')" \
+    '[[a "quote" and a \ backslash]]'
+}
+
+test_lua_literal_escalates_bracket_level() {
+  assert_eq "$(lua_literal 'ends with ]] inside')" '[=[ends with ]] inside]=]' &&
+    assert_eq "$(lua_literal 'both ]] and ]=] inside')" \
+      '[==[both ]] and ]=] inside]==]'
+}
+
+test_lua_literal_output_is_valid_lua() {
+  lua_available || return 0
+  local f="$SANDBOX/lit.lua"
+  printf 'return %s\n' "$(lua_literal '[workspace 9 silent] foo ]] ]=] bar')" >"$f"
+  lua_syntax_check "$f" ||
+    {
+      printf 'generated Lua literal does not parse\n' >&2
+      return 1
+    }
+}
+
 main() {
   it "valid workplace passes" test_valid_workplace_passes
   it "unknown section is rejected" test_unknown_section_is_rejected
@@ -654,6 +687,11 @@ main() {
   it "help lists the commands" test_help_lists_the_commands
   it "version is printed" test_version_is_printed
   it "detect needs hyprland" test_detect_needs_hyprland
+
+  it "lua literal wraps plain text" test_lua_literal_wraps_plain_text
+  it "lua literal needs no escaping" test_lua_literal_needs_no_escaping
+  it "lua literal escalates bracket level" test_lua_literal_escalates_bracket_level
+  it "lua literal output is valid lua" test_lua_literal_output_is_valid_lua
 
   it "shipped examples are valid" test_examples_are_valid
   it "shipped template is valid" test_template_is_valid
