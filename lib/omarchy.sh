@@ -67,7 +67,7 @@ _omarchy_menu_block() {
   $OMARCHY_MENU_BEGIN
   // Managed by hyprworkplace. Remove with: hyprworkplace uninstall
   "workplace": {
-    "icon": "\uf26c",
+    "icon": "",
     "label": "Workplace",
     "description": "Switch monitor, workspace and app layout",
     "action": "hyprworkplace menu"
@@ -109,8 +109,9 @@ omarchy_menu_install() {
     die "could not back up $OMARCHY_MENU_FILE"
 
   tmp=$(mktemp) || die "could not create a temporary file"
-  if ! awk -v block="$(_omarchy_menu_block)" '
-        !done && index($0, "{") { print; print block; done = 1; next }
+  if ! HW_MENU_BLOCK="$(_omarchy_menu_block)" awk '
+        BEGIN { block = ENVIRON["HW_MENU_BLOCK"] }
+        !inserted && index($0, "{") { print; print block; inserted = 1; next }
         { print }
       ' "$OMARCHY_MENU_FILE" >"$tmp"; then
     rm -f "$tmp"
