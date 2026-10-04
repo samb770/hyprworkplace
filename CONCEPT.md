@@ -119,6 +119,13 @@ Semantik:
   Fensterregel **und** Laufzeit-Aktion beim Anwenden (siehe unten).
   `match` ist Pflicht und trägt das Feld im Präfix (`class:`, `title:`,
   `initialClass:`, `initialTitle:`), damit nichts geraten wird.
+- `pin = false` (Default `true`) lässt die persistente `o.window`-Regel weg
+  **und** verschiebt beim `apply` kein existierendes passendes Fenster mehr;
+  nur fehlende Fenster werden noch per `exec` gestartet. Sinnvoll wenn
+  `match` eine Klasse trifft, die auch von Fenstern genutzt wird, die nicht
+  dauerhaft auf `workspace` gezwungen werden sollen (z.B. `chromium` für
+  private Fenster, Fehlerdialoge oder Webapp-Fenster, die der Nutzer
+  absichtlich auf einen anderen Workspace verschoben hat).
 - `split = <1-99>` (Prozent) teilt einen Workspace zwischen genau zwei
   Apps auf, deren Werte sich zu 100 addieren müssen — `validate` prüft
   das (fehlender Partner, falsche Summe, mehr als zwei Apps sind Fehler).

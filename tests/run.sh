@@ -926,6 +926,47 @@ test_force_workspace_monitors_falls_back_to_legacy() {
   assert_contains "$log" 'dispatch moveworkspacetomonitor 2 DP-2'
 }
 
+# When several workspaces share a monitor, only the first (lowest-numbered)
+# one may be forced onto it; otherwise whichever is processed last ends up
+# visible, which is arbitrary rather than the intended primary workspace.
+force_workspace_monitors_shared_log() (
+  local bindir="$SANDBOX/fakebin"
+  mkdir -p "$bindir"
+  : >"$SANDBOX/hyprctl.log"
+
+  cat >"$bindir/hyprctl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SANDBOX/hyprctl.log"
+[[ "\$1 \$2" == "eval return 1" ]] && exit 1
+exit 0
+EOF
+  chmod +x "$bindir/hyprctl"
+
+  PATH="$bindir:$PATH" bash -c '
+    die() { exit 1; }; warn() { :; }
+    source "'"$ROOT"'/lib/hypr.sh"
+    HW_WS_IDS=(1 2 3 4 5)
+    declare -A HW_WS=([1]=eDP-1 [2]=DP-2 [3]=HDMI-A-1 [4]=DP-2 [5]=HDMI-A-1)
+    hypr_force_workspace_monitors
+  '
+  cat "$SANDBOX/hyprctl.log"
+)
+
+test_force_workspace_monitors_only_moves_first_workspace_per_monitor() {
+  local log
+  log=$(force_workspace_monitors_shared_log)
+  assert_contains "$log" 'dispatch moveworkspacetomonitor 2 DP-2' || return 1
+  assert_contains "$log" 'dispatch moveworkspacetomonitor 3 HDMI-A-1' || return 1
+  if grep -q 'moveworkspacetomonitor 4 ' <<<"$log"; then
+    printf 'workspace 4 should not be forced onto DP-2, only the primary workspace 2\n' >&2
+    return 1
+  fi
+  if grep -q 'moveworkspacetomonitor 5 ' <<<"$log"; then
+    printf 'workspace 5 should not be forced onto HDMI-A-1, only the primary workspace 3\n' >&2
+    return 1
+  fi
+}
+
 apply_splits_log() (
   local bindir="$SANDBOX/fakebin"
   mkdir -p "$bindir"
@@ -977,6 +1018,54 @@ test_apply_splits_sets_the_ratio_and_restores_focus() {
   # Focus is restored to whatever was active before the function ran.
   assert_contains "$log" "eval return hl.dispatch(hl.dsp.focus({ workspace = [[5]] }))" || return 1
   assert_contains "$log" "eval return hl.dispatch(hl.dsp.focus({ window = [[address:0xorig]] }))"
+}
+
+apply_apps_log() (
+  local bindir="$SANDBOX/fakebin"
+  mkdir -p "$bindir"
+  : >"$SANDBOX/hyprctl.log"
+
+  cat >"$bindir/hyprctl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SANDBOX/hyprctl.log"
+case "\$1 \$2" in
+  "eval return 1") exit 0 ;;
+  "clients -j")
+    echo '[
+      {"address":"0xaaa","class":"chromium","workspace":{"id":5}},
+      {"address":"0xbbb","class":"foot","workspace":{"id":5}}
+    ]' ;;
+  *) ;;
+esac
+exit 0
+EOF
+  chmod +x "$bindir/hyprctl"
+
+  PATH="$bindir:$PATH" bash -c '
+    die() { exit 1; }; warn() { :; }
+    source "'"$ROOT"'/lib/config.sh"
+    source "'"$ROOT"'/lib/hypr.sh"
+    HW_APPS=(browser terminal)
+    declare -A HW_APP=(
+      [browser|workspace]=1 [browser|match]="class:^chromium$" [browser|pin]=false
+      [terminal|workspace]=1 [terminal|match]="class:^foot$"
+    )
+    hypr_apply_apps
+  '
+  cat "$SANDBOX/hyprctl.log"
+)
+
+test_apply_apps_leaves_unpinned_windows_where_they_are() {
+  local log
+  log=$(apply_apps_log)
+  # chromium is unpinned (pin = false): an already-running window must be
+  # left on whatever workspace it is currently on, not forced back.
+  if grep -q '0xaaa' <<<"$log"; then
+    printf 'an unpinned window must not be moved on apply\n%s\n' "$log" >&2
+    return 1
+  fi
+  # foot stays pinned by default and must still be moved to its workspace.
+  assert_contains "$log" 'address:0xbbb'
 }
 
 test_apply_splits_skips_a_workspace_without_both_windows() {
@@ -1082,6 +1171,7 @@ main() {
   it "generated lua parses as lua" test_generated_lua_is_valid_lua
   it "loader snippet parses as lua" test_loader_snippet_is_valid_lua
 
+  it "apply leaves unpinned windows where they are" test_apply_apps_leaves_unpinned_windows_where_they_are
   it "apply writes lua and records current" test_apply_writes_lua_and_records_current
   it "apply installs the loader once" test_apply_installs_the_loader_once
   it "loader is appended after the user config" test_loader_is_appended_after_the_user_config
@@ -1109,6 +1199,7 @@ main() {
 
   it "force workspace monitors uses lua eval" test_force_workspace_monitors_uses_lua_eval
   it "force workspace monitors falls back to legacy" test_force_workspace_monitors_falls_back_to_legacy
+  it "force workspace monitors only moves first workspace per monitor" test_force_workspace_monitors_only_moves_first_workspace_per_monitor
   it "apply splits sets the ratio and restores focus" test_apply_splits_sets_the_ratio_and_restores_focus
   it "apply splits skips a workspace without both windows" test_apply_splits_skips_a_workspace_without_both_windows
   it "edit splits editor arguments" test_edit_splits_editor_arguments

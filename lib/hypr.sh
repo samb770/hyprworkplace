@@ -85,14 +85,21 @@ _lua_literal() {
 
 # A workspace_rule's `monitor` only takes effect when the workspace is
 # (re)created; a workspace that is already visible on another monitor stays
-# put until something moves it explicitly. Force every configured workspace
-# onto its monitor so `apply` is idempotent regardless of prior state.
+# put until something moves it explicitly. Force each monitor onto its
+# first (lowest-numbered, i.e. primary) configured workspace so `apply` is
+# idempotent regardless of prior state. Only one workspace per monitor is
+# moved: moving every workspace in turn would just leave whichever one was
+# processed last visible, which is arbitrary whenever a monitor hosts more
+# than one workspace (e.g. 2/4/6/8 all on the same external display).
 hypr_force_workspace_monitors() {
   local ws mon
+  local -A seen_monitors=()
 
   for ws in "${HW_WS_IDS[@]}"; do
     mon=${HW_WS[$ws]}
     [[ -n $mon ]] || continue
+    [[ -z ${seen_monitors[$mon]:-} ]] || continue
+    seen_monitors[$mon]=1
 
     if [[ $(hypr_api) == lua ]]; then
       hyprctl eval "return hl.dispatch(hl.dsp.workspace.move({ workspace = $(_lua_literal "$ws"), monitor = $(_lua_literal "$mon") }))" \
@@ -153,6 +160,16 @@ hypr_apply_apps() {
     )
 
     if ((${#addrs[@]} > 0)); then
+      # Unpinned apps (pin = false) share their class with windows that are
+      # not meant to be pinned (e.g. a generic chromium browser also used
+      # for webapps). Forcing them back onto the configured workspace on
+      # every apply/reload would fight the user, who may have deliberately
+      # moved or opened such a window elsewhere since the last apply. So
+      # unpinned apps only get launched when missing, never moved.
+      if [[ ${HW_APP[$app|pin]:-true} == false ]]; then
+        skipped=$((skipped + 1))
+        continue
+      fi
       for addr in "${addrs[@]}"; do
         [[ -n $addr ]] || continue
         if hypr_move_window "$ws" "$addr"; then
@@ -168,6 +185,15 @@ hypr_apply_apps() {
     if [[ ${HW_APP[$app|autostart]:-true} != true ]]; then
       skipped=$((skipped + 1))
       continue
+    fi
+
+    # Stagger launches: apps that share an underlying browser profile (the
+    # "browser" entry plus any "webapp" launches) all race for the same
+    # Chromium SingletonLock if started back-to-back. Give each one a brief
+    # head start so it can grab or hand off the lock before the next one
+    # spawns, instead of occasionally failing with a profile-open error.
+    if ((launched > 0)); then
+      sleep "${HW_APP_LAUNCH_DELAY:-0.6}"
     fi
 
     exec_cmd=${HW_APP[$app|exec]}

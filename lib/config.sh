@@ -210,7 +210,7 @@ config_validate() {
 
   for app in "${HW_APPS[@]}"; do
     mapfile -t keys < <(_config_keys_of HW_APP "$app")
-    _config_check_keys "[app.$app]" "workspace exec match autostart split" "${keys[@]}"
+    _config_check_keys "[app.$app]" "workspace exec match autostart split pin" "${keys[@]}"
 
     value=${HW_APP[$app|workspace]:-}
     [[ -n $value ]] || die "[app.$app] missing required key 'workspace'"
@@ -219,6 +219,12 @@ config_validate() {
     [[ -n $value ]] || die "[app.$app] missing required key 'match'"
     _config_valid_match "$value" ||
       die "[app.$app] invalid match '$value' (use class:<regex>, title:<regex>, initialClass:<regex> or initialTitle:<regex>)"
+
+    value=${HW_APP[$app|pin]:-true}
+    case $value in
+      true | false) ;;
+      *) die "[app.$app] pin must be true or false" ;;
+    esac
 
     if [[ -n ${HW_APP[$app|split]:-} ]]; then
       value=${HW_APP[$app|split]}

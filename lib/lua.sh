@@ -65,6 +65,14 @@ lua_generate() {
   if ((${#HW_APPS[@]} > 0)); then
     printf -- '\n-- Apps\n'
     for app in "${HW_APPS[@]}"; do
+      # pin = false opts an app out of the persistent window rule: its
+      # workspace still applies when `apply` runs (moving a running window,
+      # launching a missing one), but windows are free to move afterwards
+      # instead of being pulled back by Hyprland forever. Useful for classes
+      # like a shared browser that also get used for unrelated windows.
+      if [[ ${HW_APP[$app|pin]:-true} == false ]]; then
+        continue
+      fi
       field=$(app_match_field "$app")
       regex=$(app_match_regex "$app")
       printf 'o.window({ %s = %s }, { workspace = %s })\n' \

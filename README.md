@@ -190,6 +190,7 @@ One section per connector; run `hyprctl monitors all` to see yours.
 | `exec` | — | Command used to start the app when no window matches |
 | `autostart` | `true` | `false` only moves a running window, it never launches |
 | `split` | — | Tiling share in percent, see below |
+| `pin` | `true` | `false` skips the persistent window rule, see below |
 
 Find the values to match on with `hyprctl clients`. On Omarchy, prefix launch
 commands with `uwsm-app --` so apps end up in the right systemd scope.
@@ -217,6 +218,38 @@ split     = 33
 two windows to match, and restores whatever was focused before. This only
 works for exactly two apps per workspace — `validate` rejects a lone `split`
 without a sibling, percentages that don't add up to 100, or more than two.
+
+#### Unpinning a shared window class
+
+By default every `[app.*]` becomes a permanent Hyprland window rule: any
+window matching `match` is pulled onto `workspace`, forever, even ones you
+open later by hand. That is unwanted when `match` can't tell your app's main
+window apart from other windows that happen to share the same class.
+
+Chromium is the typical case. A plain browser window (`omarchy launch
+browser`) runs with the generic class `chromium`, and that class is also
+shared by private/incognito windows, file-picker dialogs, picture-in-picture
+popups, and any other Chromium window that was not given its own class.
+Pinning `^chromium$` to a workspace would therefore drag *all* of those
+along too, including ones you deliberately opened or moved elsewhere.
+
+Dedicated webapps (`omarchy launch webapp <url>`) don't have this problem:
+each one gets its own distinct class (e.g.
+`chrome-outlook.cloud.microsoft__mail_-Default`), so `match` only ever hits
+that one window and pinning it is safe. The same goes for apps with a stable,
+unique class such as VS Code.
+
+Set `pin = false` to skip both the persistent rule and the forced move on
+`apply`: an existing matching window is left wherever it currently is, and
+`apply` only launches `exec` when no window matches at all.
+
+```ini
+[app.browser]
+workspace = 1
+match     = class:^chromium$
+exec      = omarchy launch browser
+pin       = false
+```
 
 ## How it works
 
