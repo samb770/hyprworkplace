@@ -645,6 +645,48 @@ test_lua_literal_output_is_valid_lua() {
     }
 }
 
+test_edit_splits_editor_arguments() {
+  valid_workplace | write_workplace desk
+
+  cat >"$SANDBOX/fake-editor" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" >"$SANDBOX/editor-args"
+EOF
+  chmod +x "$SANDBOX/fake-editor"
+
+  local out
+  out=$(EDITOR="$SANDBOX/fake-editor --inline" "$CLI" edit desk </dev/null 2>&1) ||
+    return 1
+  assert_contains "$out" "is valid" || return 1
+
+  local args
+  args=$(<"$SANDBOX/editor-args")
+  assert_contains "$args" "--inline" || return 1
+  assert_contains "$args" "desk.conf"
+}
+
+test_edit_prefers_visual_over_editor() {
+  valid_workplace | write_workplace desk
+
+  cat >"$SANDBOX/fake-editor" <<EOF
+#!/usr/bin/env bash
+printf 'visual\n' >"$SANDBOX/editor-args"
+EOF
+  chmod +x "$SANDBOX/fake-editor"
+
+  VISUAL="$SANDBOX/fake-editor" EDITOR=definitely-not-installed \
+    "$CLI" edit desk </dev/null >/dev/null 2>&1 || return 1
+  assert_eq "$(<"$SANDBOX/editor-args")" visual
+}
+
+test_edit_reports_a_missing_editor() {
+  valid_workplace | write_workplace desk
+  local out
+  out=$(VISUAL="" EDITOR="definitely-not-installed --inline" \
+    "$CLI" edit desk </dev/null 2>&1) && return 1
+  assert_contains "$out" "editor 'definitely-not-installed' not found"
+}
+
 main() {
   it "valid workplace passes" test_valid_workplace_passes
   it "unknown section is rejected" test_unknown_section_is_rejected
@@ -692,6 +734,10 @@ main() {
   it "lua literal needs no escaping" test_lua_literal_needs_no_escaping
   it "lua literal escalates bracket level" test_lua_literal_escalates_bracket_level
   it "lua literal output is valid lua" test_lua_literal_output_is_valid_lua
+
+  it "edit splits editor arguments" test_edit_splits_editor_arguments
+  it "edit prefers VISUAL over EDITOR" test_edit_prefers_visual_over_editor
+  it "edit reports a missing editor" test_edit_reports_a_missing_editor
 
   it "shipped examples are valid" test_examples_are_valid
   it "shipped template is valid" test_template_is_valid

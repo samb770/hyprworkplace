@@ -369,12 +369,20 @@ cmd_edit() {
   [[ -n $name ]] || die "usage: hyprworkplace edit <name>"
   require_workplace "$name"
 
-  local file editor
+  local file
+  local -a editor=()
   file=$(workplace_file "$name")
-  editor=${EDITOR:-${VISUAL:-nano}}
+
+  # $VISUAL and $EDITOR may carry arguments (Omarchy ships
+  # EDITOR="omarchy-launch-editor --inline"), so split them into words the
+  # way git and sudo do instead of treating the whole string as a command.
+  read -ra editor <<<"${VISUAL:-${EDITOR:-}}"
+  ((${#editor[@]} > 0)) || editor=(nano)
+  command -v "${editor[0]}" >/dev/null 2>&1 ||
+    die "editor '${editor[0]}' not found, set \$EDITOR to something installed"
 
   while true; do
-    "$editor" "$file" || die "editor exited with an error"
+    "${editor[@]}" "$file" || die "editor exited with an error"
 
     if (load_workplace "$name") 2>/dev/null; then
       break
